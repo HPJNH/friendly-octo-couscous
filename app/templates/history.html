@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-card history-page">
+    <div class="section-header">
+        <div>
+            <p class="section-kicker">历史归档</p>
+            <h3>按日期回看每日简报与研究底稿</h3>
+            <p class="section-description">每一天都保留简报、底稿、版本状态与导出入口，便于快速回看和横向比对。</p>
+        </div>
+    </div>
+
+    {% if history_days %}
+        <div class="archive-grid">
+            {% for day in history_days %}
+                <article class="archive-card">
+                    <div class="archive-head">
+                        <div>
+                            <h4>{{ day.report_date }}</h4>
+                            <p>简报：{{ '已上传' if day.has_brief else '缺失' }} / 底稿：{{ '已上传' if day.has_draft else '缺失' }}</p>
+                        </div>
+                        <div class="archive-actions">
+                            <a class="primary-button small" href="{{ url_for('main.day', report_date=day.report_date) }}">打开当日页面</a>
+                            {% if day.can_export %}
+                                <a class="ghost-button small" href="{{ url_for('main.export_day_pdf', report_date=day.report_date) }}?next={{ request.path }}">导出 PDF</a>
+                            {% else %}
+                                <span class="ghost-button small disabled-link">暂不可导出</span>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <div class="history-tags">
+                        {% for label in ['新增', '更新', '背景补充', '历史保留', '占位项', '无内容'] %}
+                            {% set count = day.status_counts.get(label, 0) %}
+                            {% if count %}
+                                <span class="status-pill {{ {
+                                    '新增': 'tag-new',
+                                    '更新': 'tag-update',
+                                    '背景补充': 'tag-background',
+                                    '历史保留': 'tag-retained',
+                                    '占位项': 'tag-placeholder',
+                                    '无内容': 'tag-empty'
+                                }[label] }}">{{ label }} {{ count }}</span>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+
+                    <div class="file-notes">
+                        {% if day.brief_name %}
+                            <p>简报文件：{{ day.brief_name }}</p>
+                        {% endif %}
+                        {% if day.draft_name %}
+                            <p>底稿文件：{{ day.draft_name }}</p>
+                        {% endif %}
+                        <p>底稿版本：启用 {{ day.draft_versions.get('active', 0) }} / 已撤回 {{ day.draft_versions.get('withdrawn', 0) }} / 已归档 {{ day.draft_versions.get('archived', 0) }}</p>
+                        <p>简报版本：启用 {{ day.brief_versions.get('active', 0) }} / 已撤回 {{ day.brief_versions.get('withdrawn', 0) }} / 已归档 {{ day.brief_versions.get('archived', 0) }}</p>
+                    </div>
+                </article>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="empty-panel">
+            <p>当前还没有历史归档。</p>
+            <p>上传文件后，系统会自动按日期生成可回看的历史记录。</p>
+        </div>
+    {% endif %}
+</section>
+{% endblock %}

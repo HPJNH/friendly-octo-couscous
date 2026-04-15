@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ project_name }}</title>
+    <script>
+        (function () {
+            var storageKey = "agarwood-view-mode";
+            var preference = "auto";
+            try {
+                preference = localStorage.getItem(storageKey) || "auto";
+            } catch (error) {
+                preference = "auto";
+            }
+            var mode = preference === "auto" ? (window.innerWidth <= 960 ? "mobile" : "desktop") : preference;
+            var root = document.documentElement;
+            root.classList.add(mode === "mobile" ? "view-mobile" : "view-desktop");
+            if (preference !== "auto") {
+                root.classList.add("view-manual");
+            }
+            root.setAttribute("data-view-preference", preference);
+            root.setAttribute("data-view-mode", mode);
+        })();
+    </script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="app-shell">
+        {% if access_verified %}
+            <button
+                type="button"
+                class="mobile-nav-toggle"
+                data-menu-toggle
+                aria-expanded="false"
+                aria-controls="sidebar"
+                aria-label="打开导航菜单"
+            >
+                <span class="menu-toggle-icon" aria-hidden="true">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </span>
+                <span class="menu-toggle-label">导航</span>
+            </button>
+            <div class="mobile-backdrop" data-menu-backdrop></div>
+        {% endif %}
+
+        <aside class="sidebar" id="sidebar" aria-label="主导航">
+            <div class="drawer-shell">
+                <header class="sidebar-header">
+                    <div class="sidebar-header-copy">
+                        <p class="brand-kicker">沉香情报</p>
+                        <h1 class="sidebar-title">浏览导航</h1>
+                        <p class="sidebar-mode-text">
+                            当前模式：<strong data-view-mode-menu>桌面版</strong>
+                        </p>
+                    </div>
+                    <button type="button" class="drawer-close" data-menu-close aria-label="关闭导航菜单">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </header>
+
+                <div class="sidebar-scroll" data-menu-scroll>
+                    <section class="sidebar-intro">
+                        <p class="brand-kicker">本地行业记忆系统</p>
+                        <h2>{{ project_name }}</h2>
+                        <p class="brand-note">围绕今日判断、历史留存、版本归档与证据链展示展开，服务内部研究和管理浏览。</p>
+                    </section>
+
+                    <nav class="sidebar-nav">
+                        <section class="nav-group">
+                            <p class="nav-group-title">今日浏览</p>
+                            <a class="nav-link {% if current_page == 'home' %}active{% endif %}" data-menu-link href="{{ url_for('main.index') }}">
+                                <span class="nav-link-index">今日</span>
+                                <span class="nav-link-text">今日简报</span>
+                            </a>
+                        </section>
+
+                        <section class="nav-group">
+                            <p class="nav-group-title">底稿板块</p>
+                            {% for item in sidebar_sections %}
+                                {% if item.link %}
+                                    <a
+                                        class="nav-link {% if current_page == 'section' and detail and detail.section_key == item.key %}active{% endif %}"
+                                        data-menu-link
+                                        href="{{ item.link }}"
+                                    >
+                                        <span class="nav-link-index">{{ "%02d"|format(loop.index) }}</span>
+                                        <span class="nav-link-text">{{ item.title }}</span>
+                                    </a>
+                                {% else %}
+                                    <span class="nav-link disabled">
+                                        <span class="nav-link-index">{{ "%02d"|format(loop.index) }}</span>
+                                        <span class="nav-link-text">{{ item.title }}</span>
+                                    </span>
+                                {% endif %}
+                            {% endfor %}
+                        </section>
+
+                        <section class="nav-group">
+                            <p class="nav-group-title">系统功能</p>
+                            <a class="nav-link {% if current_page == 'history' %}active{% endif %}" data-menu-link href="{{ url_for('main.history') }}">
+                                <span class="nav-link-index">历史</span>
+                                <span class="nav-link-text">历史记录</span>
+                            </a>
+                            <a class="nav-link {% if current_page == 'library' %}active{% endif %}" data-menu-link href="{{ url_for('main.library') }}">
+                                <span class="nav-link-index">文件</span>
+                                <span class="nav-link-text">文件库</span>
+                            </a>
+                            {% if access_role == 'admin' %}
+                                <a class="nav-link {% if current_page == 'upload' %}active{% endif %}" data-menu-link href="{{ url_for('main.upload') }}">
+                                    <span class="nav-link-index">上传</span>
+                                    <span class="nav-link-text">上传文件</span>
+                                </a>
+                                <a class="nav-link {% if current_page == 'access_manage' %}active{% endif %}" data-menu-link href="{{ url_for('main.access_manage') }}">
+                                    <span class="nav-link-index">权限</span>
+                                    <span class="nav-link-text">访问资格管理</span>
+                                </a>
+                            {% endif %}
+                        </section>
+                    </nav>
+                </div>
+
+                <footer class="sidebar-footer">
+                    <details class="sidebar-fold" data-sidebar-fold="view-mode">
+                        <summary class="sidebar-fold-summary">
+                            <div class="sidebar-tool-header">
+                                <div>
+                                    <p class="nav-group-title">视图模式</p>
+                                    <p class="sidebar-fold-note">切换桌面 / 手机 / 自动适配</p>
+                                </div>
+                                <div class="sidebar-fold-meta">
+                                    <span class="mode-mini" data-view-mode-label>桌面版</span>
+                                    <span class="fold-chevron" aria-hidden="true"></span>
+                                </div>
+                            </div>
+                        </summary>
+                        <div class="sidebar-fold-panel">
+                            <p class="sidebar-tool-note" data-view-mode-note>当前按页面宽度自动适配。</p>
+                            <div class="view-switcher-buttons compact">
+                                <button type="button" class="view-chip" data-view-mode-option="desktop">电脑版</button>
+                                <button type="button" class="view-chip" data-view-mode-option="mobile">手机版</button>
+                                <button type="button" class="view-chip" data-view-mode-option="auto">自动</button>
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="sidebar-fold muted-tools" data-sidebar-fold="admin-tools">
+                        <summary class="sidebar-fold-summary">
+                            <div class="sidebar-tool-header">
+                                <div>
+                                    <p class="nav-group-title">管理操作</p>
+                                    <p class="sidebar-fold-note">上传、版本切换与访问资格管理</p>
+                                </div>
+                                <div class="sidebar-fold-meta">
+                                    <span class="mode-mini {% if admin_verified %}is-active{% endif %}">
+                                        {{ "管理员" if admin_verified else "仅浏览" }}
+                                    </span>
+                                    <span class="fold-chevron" aria-hidden="true"></span>
+                                </div>
+                            </div>
+                        </summary>
+                        <div class="sidebar-fold-panel">
+                            <p class="sidebar-tool-note">
+                                当前登录：{{ access_label }}{% if access_role != 'guest' %} / {{ access_role }}{% endif %}
+                            </p>
+                            <div class="sidebar-utility-stack">
+                                {% if admin_verified %}
+                                    <a class="ghost-button small full-width" href="{{ url_for('main.upload') }}">上传新文件</a>
+                                    <a class="ghost-button small full-width" href="{{ url_for('main.access_manage') }}">管理访问资格</a>
+                                {% else %}
+                                    <a class="ghost-button small full-width" href="{{ url_for('main.admin_verify', next=request.path) }}">切换为管理员</a>
+                                {% endif %}
+                                <form method="post" action="{{ url_for('main.access_logout') }}">
+                                    <button type="submit" class="ghost-button small full-width">退出当前会话</button>
+                                </form>
+                            </div>
+                        </div>
+                    </details>
+                </footer>
+            </div>
+        </aside>
+
+        <main class="main-panel">
+            <header class="topbar">
+                <div class="topbar-main">
+                    <div class="topbar-copy">
+                        <p class="topbar-kicker">浏览日期</p>
+                        <h2>{{ nav_date or latest_date or '尚未生成日页面' }}</h2>
+                    </div>
+                    <div class="topbar-mode">
+                        <span class="topbar-mode-label">当前模式</span>
+                        <strong data-view-mode-label>桌面版</strong>
+                    </div>
+                </div>
+                <div class="topbar-actions">
+                    <span class="meta-chip">{{ access_label }}</span>
+                    {% if export_link %}
+                        <a class="ghost-button" href="{{ export_link }}?next={{ request.path }}">导出今日 PDF</a>
+                    {% endif %}
+                    {% if debug_link and access_role == 'admin' %}
+                        <a class="ghost-button" href="{{ debug_link }}">解析调试</a>
+                    {% endif %}
+                    <a class="ghost-button" href="{{ url_for('main.library') }}">文件库</a>
+                    <a class="ghost-button" href="{{ url_for('main.history') }}">历史记录</a>
+                    {% if access_role == 'admin' %}
+                        <a class="primary-button" href="{{ url_for('main.upload') }}">上传新文件</a>
+                    {% else %}
+                        <a class="primary-button" href="{{ url_for('main.admin_verify', next=url_for('main.upload')) }}">切换管理权限</a>
+                    {% endif %}
+                </div>
+            </header>
+
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    <section class="flash-stack">
+                        {% for category, message in messages %}
+                            {% if message is mapping %}
+                                <article class="flash-card flash-{{ category }}">
+                                    <div class="flash-copy">
+                                        <h3>{{ message.title }}</h3>
+                                        <p>{{ message.body }}</p>
+                                        {% if message.saved_path %}
+                                            <p class="flash-path">保存位置：{{ message.saved_path }}</p>
+                                        {% endif %}
+                                    </div>
+                                    <div class="flash-actions">
+                                        {% if message.download_url %}
+                                            <a class="primary-button small" href="{{ message.download_url }}">下载 PDF</a>
+                                        {% endif %}
+                                    </div>
+                                </article>
+                            {% else %}
+                                <article class="flash-card flash-{{ category }}">
+                                    <div class="flash-copy">
+                                        <h3>{{ '提示' if category == 'success' else '注意' }}</h3>
+                                        <p>{{ message }}</p>
+                                    </div>
+                                </article>
+                            {% endif %}
+                        {% endfor %}
+                    </section>
+                {% endif %}
+            {% endwith %}
+
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-card library-page">
+    <div class="section-header">
+        <div>
+            <p class="section-kicker">文件库</p>
+            <h3>集中管理底稿、简报与导出成果</h3>
+            <p class="section-description">浏览需要先通过访问码验证；撤回、删除、激活和版本切换等会影响数据状态的操作，需要管理员权限。</p>
+        </div>
+        {% if access_role == 'admin' %}
+            <a class="ghost-button" href="{{ url_for('main.access_manage') }}">管理访问资格</a>
+        {% else %}
+            <a class="ghost-button" href="{{ url_for('main.admin_verify', next=request.path) }}">切换为管理员</a>
+        {% endif %}
+    </div>
+    <div class="overview-strip library-summary">
+        <article class="overview-tile">
+            <span>当前生效文件</span>
+            <strong>{{ library_view.summary.get('current_effective', 0) }}</strong>
+        </article>
+        <article class="overview-tile">
+            <span>已归档文件</span>
+            <strong>{{ library_view.summary.get('archived', 0) }}</strong>
+        </article>
+        <article class="overview-tile">
+            <span>已撤回文件</span>
+            <strong>{{ library_view.summary.get('withdrawn', 0) }}</strong>
+        </article>
+        <article class="overview-tile">
+            <span>导出文件</span>
+            <strong>{{ library_view.summary.get('exports', 0) }}</strong>
+        </article>
+    </div>
+</section>
+
+{% macro manage_actions(item) -%}
+    {% if access_role == 'admin' %}
+        {% if item.can_withdraw %}
+            <form method="post" action="{{ url_for('main.library_document_withdraw', document_id=item.id) }}">
+                <input type="hidden" name="next" value="{{ request.path }}">
+                <button
+                    type="submit"
+                    class="ghost-button small danger-button"
+                    data-confirm="确认撤回这份文件吗？撤回后它将不再参与当前展示和新增判断。"
+                >撤回</button>
+            </form>
+        {% endif %}
+        {% if item.can_activate %}
+            <form method="post" action="{{ url_for('main.library_document_activate', document_id=item.id) }}">
+                <input type="hidden" name="next" value="{{ request.path }}">
+                <button
+                    type="submit"
+                    class="primary-button small"
+                    data-confirm="确认将这份文件设为当前生效版本吗？同日同类型其他版本会自动归档。"
+                >设为生效</button>
+            </form>
+        {% endif %}
+        {% if item.can_delete %}
+            <form method="post" action="{% if item.kind == 'document' %}{{ url_for('main.library_document_delete', document_id=item.id) }}{% else %}{{ url_for('main.library_export_delete', export_id=item.id) }}{% endif %}">
+                <input type="hidden" name="next" value="{{ request.path }}">
+                <button
+                    type="submit"
+                    class="ghost-button small danger-button"
+                    data-confirm="确认删除这份文件吗？删除后它将从当前可用版本链中移除。"
+                >删除</button>
+            </form>
+        {% endif %}
+    {% else %}
+        <a class="ghost-button small" href="{{ url_for('main.admin_verify', next=request.path) }}">切换为管理员</a>
+    {% endif %}
+{%- endmacro %}
+
+{% macro file_card(item) -%}
+<article class="library-card">
+    <div class="archive-head">
+        <div>
+            <h4>{{ item.name }}</h4>
+            <p>{{ item.doc_type_label }} / {{ item.file_ext }}</p>
+        </div>
+        <div class="history-tags">
+            <span class="status-pill {{ item.status_class }}">{{ item.status_label }}</span>
+            {% if item.is_current %}
+                <span class="status-pill tag-new">当前生效</span>
+            {% endif %}
+        </div>
+    </div>
+    <div class="file-notes">
+        <p>上传时间：{{ item.uploaded_at }}</p>
+        <p>归档日期：{{ item.report_date }}</p>
+        <p class="path-muted">{{ item.stored_path }}</p>
+    </div>
+    <div class="archive-actions">
+        <a class="ghost-button small" href="{{ item.detail_url }}">查看详情</a>
+        {% if item.status != 'deleted' %}
+            <a class="ghost-button small" href="{{ item.download_url }}">下载原件</a>
+        {% endif %}
+        {{ manage_actions(item) }}
+    </div>
+</article>
+{%- endmacro %}
+
+<section class="page-card">
+    <div class="section-header">
+        <div>
+            <p class="section-kicker">研究底稿</p>
+            <h3>底稿文件版本</h3>
+        </div>
+    </div>
+    <div class="history-list">
+        {% for item in library_view.drafts %}
+            {{ file_card(item) }}
+        {% else %}
+            <div class="empty-panel"><p>文件库里还没有研究底稿。</p></div>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="page-card">
+    <div class="section-header">
+        <div>
+            <p class="section-kicker">每日简报</p>
+            <h3>简报文件版本</h3>
+        </div>
+    </div>
+    <div class="history-list">
+        {% for item in library_view.briefs %}
+            {{ file_card(item) }}
+        {% else %}
+            <div class="empty-panel"><p>文件库里还没有每日简报。</p></div>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="page-card">
+    <div class="section-header">
+        <div>
+            <p class="section-kicker">导出成果</p>
+            <h3>PDF 与其他导出文件</h3>
+        </div>
+    </div>
+    <div class="history-list">
+        {% for item in library_view.exports %}
+            {{ file_card(item) }}
+        {% else %}
+            <div class="empty-panel"><p>暂时还没有导出的成果文件。</p></div>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="page-card">
+    <div class="section-header">
+        <div>
+            <p class="section-kicker">归档旧文件</p>
+            <h3>已归档与已撤回的历史版本</h3>
+        </div>
+    </div>
+    <div class="history-list">
+        {% for item in library_view.archived_files %}
+            {{ file_card(item) }}
+        {% else %}
+            <div class="empty-panel"><p>当前没有需要单独处理的历史版本。</p></div>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}

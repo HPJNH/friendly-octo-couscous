@@ -1,0 +1,274 @@
+{% extends "base.html" %}
+
+{% macro evidence_drawer(card, report_date) -%}
+<details class="evidence-drawer">
+    <summary>查看来源与证据链</summary>
+    <div class="evidence-grid">
+        <div class="drawer-item">
+            <span class="meta-label">主来源</span>
+            <strong>{{ card.source_title or card.title }}</strong>
+            <p>{{ card.source or '未标注来源名称' }}</p>
+            {% if card.source_url %}
+                <p><a href="{{ card.source_url }}" target="_blank" rel="noopener noreferrer">打开主来源链接</a></p>
+                <button type="button" class="ghost-button small" data-copy-url="{{ card.source_url }}">复制链接</button>
+            {% else %}
+                <p class="warning-text">当前缺少可直接打开的原始链接，建议人工复核。</p>
+            {% endif %}
+        </div>
+        <div class="drawer-item">
+            <span class="meta-label">时间留存</span>
+            <p>首次出现：{{ card.first_seen or report_date }}</p>
+            <p>最近更新：{{ card.last_seen or report_date }}</p>
+            {% if card.confidence_level %}
+                <p>可信度：{{ card.confidence_level }}</p>
+            {% endif %}
+            {% if card.needs_review %}
+                <p class="warning-text">该条目已标记为待人工复核。</p>
+            {% endif %}
+        </div>
+        {% if card.supporting_sources %}
+            <div class="drawer-item">
+                <span class="meta-label">支撑来源</span>
+                <div class="supporting-source-list">
+                    {% for source in card.supporting_sources %}
+                        <article class="supporting-source">
+                            <strong>{{ source.title }}</strong>
+                            <p>{{ source.source_name }}{% if source.time_text %} / {{ source.time_text }}{% endif %}</p>
+                            {% if source.source_url %}
+                                <p><a href="{{ source.source_url }}" target="_blank" rel="noopener noreferrer">打开支撑来源</a></p>
+                            {% endif %}
+                        </article>
+                    {% endfor %}
+                </div>
+            </div>
+        {% endif %}
+    </div>
+</details>
+{%- endmacro %}
+
+{% block content %}
+<section class="detail-hero reading-hero">
+    <div class="detail-head">
+        <div>
+            <p class="section-kicker">板块阅读页</p>
+            <h3>{{ detail.title }}</h3>
+            <div class="reading-meta">
+                <span class="info-chip">日期 {{ detail.report_date }}</span>
+                <span class="info-chip muted">{{ detail.render_model.template_label }}</span>
+            </div>
+        </div>
+        <span class="status-pill large {{ detail.status_class }}">{{ detail.status }}</span>
+    </div>
+    <div class="detail-actions">
+        <a class="ghost-button" href="{{ detail.day_url }}#brief-section">回到今日简报</a>
+        <a class="ghost-button" href="{{ url_for('main.day', report_date=detail.report_date) }}">返回首页</a>
+        <a class="ghost-button" href="{{ detail.export_url }}?next={{ request.path }}">导出今日 PDF</a>
+        <a class="ghost-button" href="{{ detail.debug_url }}">查看解析调试</a>
+        <a class="ghost-button" href="#" onclick="history.back(); return false;">返回上一页</a>
+    </div>
+</section>
+
+<section class="reading-note">
+    <p>{{ detail.note }}</p>
+</section>
+
+{% if detail.parse_warning %}
+    <section class="page-card warning-panel">
+        <p>{{ detail.parse_warning }}</p>
+    </section>
+{% endif %}
+
+<section class="page-card reading-stage">
+    <div class="filter-toolbar">
+        <span class="filter-label">卡片筛选</span>
+        <button type="button" class="filter-chip active" data-card-filter="all">全部</button>
+        <button type="button" class="filter-chip" data-card-filter="新增">仅新增 {{ detail.filter_counts.get('新增', 0) }}</button>
+        <button type="button" class="filter-chip" data-card-filter="更新">仅更新 {{ detail.filter_counts.get('更新', 0) }}</button>
+        <button type="button" class="filter-chip" data-card-filter="背景补充">背景补充 {{ detail.filter_counts.get('背景补充', 0) }}</button>
+        <button type="button" class="filter-chip" data-card-filter="历史保留">仅历史保留 {{ detail.filter_counts.get('历史保留', 0) }}</button>
+        <button type="button" class="filter-chip" data-card-filter="占位项">仅占位项 {{ detail.filter_counts.get('占位项', 0) }}</button>
+    </div>
+
+    {% if detail.has_effective_content and detail.render_model.groups %}
+        {% for group in detail.render_model.groups %}
+            <section class="content-group template-{{ detail.render_model.template_name }}">
+                {% if group.title %}
+                    <div class="group-header">
+                        <div>
+                            <span class="group-index">层级 {{ group.level }}</span>
+                            <h4>{{ group.title }}</h4>
+                        </div>
+                        {% if group.category %}
+                            <span class="group-category">{{ group.category }}</span>
+                        {% endif %}
+                    </div>
+                {% endif %}
+
+                {% if group.blocks %}
+                    <div class="group-content">
+                        {% for block in group.blocks %}
+                            {% if block.type == 'paragraph' %}
+                                <article class="insight-card paragraph-card" data-status="{{ detail.status }}">
+                                    <div class="insight-top">
+                                        <h5>正文段落</h5>
+                                        <span class="status-pill {{ detail.status_class }}">{{ detail.status }}</span>
+                                    </div>
+                                    <div class="insight-body">
+                                        <p>{{ block.text | e | replace('\n', '<br>') | safe }}</p>
+                                    </div>
+                                </article>
+                            {% elif block.type == 'card' %}
+                                {% set card = block.card %}
+                                <article class="insight-card card-{{ card.style }}" data-status="{{ card.status }}">
+                                    <div class="insight-top">
+                                        <h5>{{ card.title }}</h5>
+                                        <span class="status-pill {{ card.status_class }}">{{ card.status }}</span>
+                                    </div>
+                                    <div class="insight-meta">
+                                        {% if card.time %}
+                                            <span class="meta-chip">{{ card.time }}</span>
+                                        {% endif %}
+                                        {% if card.source %}
+                                            <span class="meta-chip">{{ card.source }}</span>
+                                        {% endif %}
+                                        {% if card.first_seen %}
+                                            <span class="meta-chip soft">首次 {{ card.first_seen }}</span>
+                                        {% endif %}
+                                        {% if card.last_seen %}
+                                            <span class="meta-chip soft">最近 {{ card.last_seen }}</span>
+                                        {% endif %}
+                                        {% for tag in card.tags %}
+                                            <span class="meta-chip soft">{{ tag }}</span>
+                                        {% endfor %}
+                                    </div>
+                                    <div class="insight-body">
+                                        <p>{{ card.core_content | e | replace('\n', '<br>') | safe }}</p>
+                                    </div>
+                                    {% if card.why %}
+                                        <div class="insight-why">
+                                            <span>为什么值得纳入</span>
+                                            <p>{{ card.why | e | replace('\n', '<br>') | safe }}</p>
+                                        </div>
+                                    {% endif %}
+                                    {{ evidence_drawer(card, detail.report_date) }}
+                                </article>
+                            {% elif block.type == 'table' %}
+                                {% if block.cards %}
+                                    <div class="card-grid">
+                                        {% for card in block.cards %}
+                                            <article class="insight-card" data-status="{{ card.status }}">
+                                                <div class="insight-top">
+                                                    <h5>{{ card.title }}</h5>
+                                                    <span class="status-pill {{ card.status_class }}">{{ card.status }}</span>
+                                                </div>
+                                                <div class="insight-meta">
+                                                    {% if card.time %}
+                                                        <span class="meta-chip">{{ card.time }}</span>
+                                                    {% endif %}
+                                                    {% if card.source %}
+                                                        <span class="meta-chip">{{ card.source }}</span>
+                                                    {% endif %}
+                                                    {% if card.first_seen %}
+                                                        <span class="meta-chip soft">首次 {{ card.first_seen }}</span>
+                                                    {% endif %}
+                                                    {% if card.last_seen %}
+                                                        <span class="meta-chip soft">最近 {{ card.last_seen }}</span>
+                                                    {% endif %}
+                                                    {% for tag in card.tags %}
+                                                        <span class="meta-chip soft">{{ tag }}</span>
+                                                    {% endfor %}
+                                                </div>
+                                                <div class="insight-body">
+                                                    <p>{{ card.core_content | e | replace('\n', '<br>') | safe }}</p>
+                                                </div>
+                                                {% if card.why %}
+                                                    <div class="insight-why">
+                                                        <span>为什么值得纳入</span>
+                                                        <p>{{ card.why | e | replace('\n', '<br>') | safe }}</p>
+                                                    </div>
+                                                {% endif %}
+                                                {{ evidence_drawer(card, detail.report_date) }}
+                                            </article>
+                                        {% endfor %}
+                                    </div>
+                                {% endif %}
+
+                                {% if block.headers and block.rows %}
+                                    <details class="table-drawer">
+                                        <summary>查看原始表格结构</summary>
+                                        <div class="table-scroll">
+                                            <table class="detail-table">
+                                                <thead>
+                                                    <tr>
+                                                        {% for header in block.headers %}
+                                                            <th>{{ header }}</th>
+                                                        {% endfor %}
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {% for row in block.rows %}
+                                                        <tr>
+                                                            {% for cell in row %}
+                                                                <td>{{ cell | e | replace('\n', '<br>') | safe }}</td>
+                                                            {% endfor %}
+                                                        </tr>
+                                                    {% endfor %}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </details>
+                                {% endif %}
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            </section>
+        {% endfor %}
+    {% else %}
+        <div class="empty-panel">
+            <p>本板块本日未解析出有效正文，请检查原始文档结构或解析结果。</p>
+        </div>
+    {% endif %}
+</section>
+
+<details class="meta-drawer">
+    <summary>查看原始信息</summary>
+    <div class="drawer-grid">
+        <div class="drawer-item">
+            <span class="meta-label">当前生效文件</span>
+            <strong>{{ detail.current_file_name }}</strong>
+            <p>{{ detail.current_file_path }}</p>
+        </div>
+        <div class="drawer-item">
+            <span class="meta-label">累计内容来源</span>
+            <strong>{{ detail.source_date or detail.report_date }}</strong>
+            <p>当前页面展示的是截至该日期的累计有效内容视图，状态标注仍按最近有效版本链计算。</p>
+        </div>
+        <div class="drawer-item">
+            <span class="meta-label">文件库入口</span>
+            <strong><a href="{{ url_for('main.library_document_detail', document_id=detail.current_file_id) }}">查看该文件详情</a></strong>
+        </div>
+    </div>
+</details>
+
+<section class="page-card">
+    <div class="section-header">
+        <div>
+            <p class="section-kicker">历史变化</p>
+            <h3>该板块最近版本</h3>
+        </div>
+    </div>
+    <div class="timeline-list">
+        {% for item in detail.history_rows %}
+            <article class="timeline-item">
+                <div class="timeline-head">
+                    <h4>{{ item.report_date }}</h4>
+                    <span class="status-pill {{ item.status_class }}">{{ item.status }}</span>
+                </div>
+                <p>{{ item.note }}</p>
+                <p class="timeline-excerpt">{{ item.excerpt }}</p>
+            </article>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}

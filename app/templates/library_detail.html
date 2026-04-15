@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="detail-hero library-detail-hero">
+    <div class="detail-head">
+        <div>
+            <p class="section-kicker">文件详情</p>
+            <h3>{{ detail.name }}</h3>
+            <div class="reading-meta">
+                <span class="info-chip">{{ detail.doc_type_label }}</span>
+                <span class="info-chip">归档日期 {{ detail.report_date }}</span>
+            </div>
+        </div>
+        <div class="history-tags">
+            <span class="status-pill {{ detail.status_class }}">{{ detail.status_label }}</span>
+            {% if detail.is_current %}
+                <span class="status-pill tag-new">当前生效</span>
+            {% endif %}
+        </div>
+    </div>
+    <div class="detail-actions">
+        <a class="ghost-button" href="{{ url_for('main.library') }}">返回文件库</a>
+        {% if detail.kind == 'document' and detail.status != 'deleted' %}
+            <a class="ghost-button" href="{{ url_for('main.library_document_download', document_id=detail.id) }}">下载原件</a>
+        {% elif detail.kind == 'export' and detail.status != 'deleted' %}
+            <a class="ghost-button" href="{{ url_for('main.library_export_download', export_id=detail.id) }}">下载文件</a>
+        {% endif %}
+        {% if admin_verified %}
+            {% if detail.kind == 'document' and detail.status != 'withdrawn' and detail.status != 'deleted' and not detail.is_current %}
+                <form method="post" action="{{ url_for('main.library_document_activate', document_id=detail.id) }}">
+                    <input type="hidden" name="next" value="{{ request.path }}">
+                    <button
+                        type="submit"
+                        class="primary-button"
+                        data-confirm="确认将这份文件设为当前生效版本吗？"
+                    >设为生效</button>
+                </form>
+            {% endif %}
+            {% if detail.kind == 'document' and detail.status == 'active' %}
+                <form method="post" action="{{ url_for('main.library_document_withdraw', document_id=detail.id) }}">
+                    <input type="hidden" name="next" value="{{ request.path }}">
+                    <button
+                        type="submit"
+                        class="ghost-button danger-button"
+                        data-confirm="确认撤回这份文件吗？撤回后它将不再参与当前展示和新增判断。"
+                    >撤回该文件</button>
+                </form>
+            {% endif %}
+            {% if detail.can_delete %}
+                <form method="post" action="{% if detail.kind == 'document' %}{{ url_for('main.library_document_delete', document_id=detail.id) }}{% else %}{{ url_for('main.library_export_delete', export_id=detail.id) }}{% endif %}">
+                    <input type="hidden" name="next" value="{{ request.path }}">
+                    <button
+                        type="submit"
+                        class="ghost-button danger-button"
+                        data-confirm="确认删除这份文件吗？删除后它将从当前可用版本链中移除。"
+                    >删除文件</button>
+                </form>
+            {% endif %}
+        {% else %}
+            <a class="ghost-button" href="{{ url_for('main.admin_verify', next=request.path) }}">验证后管理</a>
+        {% endif %}
+    </div>
+</section>
+
+<section class="page-card">
+    <div class="detail-meta-grid">
+        <article class="meta-box">
+            <span class="meta-label">上传时间</span>
+            <strong>{{ detail.uploaded_at }}</strong>
+        </article>
+        <article class="meta-box">
+            <span class="meta-label">文件类型</span>
+            <strong>{{ detail.file_ext }}</strong>
+        </article>
+        <article class="meta-box">
+            <span class="meta-label">文件标题</span>
+            <strong>{{ detail.title }}</strong>
+        </article>
+    </div>
+</section>
+
+<details class="meta-drawer">
+    <summary>查看路径与解析信息</summary>
+    <div class="drawer-grid">
+        <div class="drawer-item">
+            <span class="meta-label">原始文件位置</span>
+            <p>{{ detail.stored_path }}</p>
+        </div>
+        {% if detail.parsed_path %}
+            <div class="drawer-item">
+                <span class="meta-label">解析归档位置</span>
+                <p>{{ detail.parsed_path }}</p>
+            </div>
+        {% endif %}
+        {% if detail.metadata %}
+            <div class="drawer-item">
+                <span class="meta-label">解析版本</span>
+                <p>{{ detail.metadata.get('parser_version', '未知') }}</p>
+                {% if detail.metadata.get('recognition_note') %}
+                    <p>{{ detail.metadata.get('recognition_note') }}</p>
+                {% endif %}
+            </div>
+        {% endif %}
+    </div>
+</details>
+
+{% if detail.kind == 'document' %}
+    <section class="page-card">
+        <div class="section-header">
+            <div>
+                <p class="section-kicker">同日版本</p>
+                <h3>同一天上传的相关文件</h3>
+            </div>
+        </div>
+        <div class="history-list">
+            {% for item in detail.same_day_versions %}
+                <article class="library-card compact">
+                    <div class="archive-head">
+                        <div>
+                            <h4>{{ item.name }}</h4>
+                            <p>{{ item.uploaded_at }}</p>
+                        </div>
+                        <div class="history-tags">
+                            <span class="status-pill {{ item.status_class }}">{{ item.status_label }}</span>
+                            {% if item.is_current %}
+                                <span class="status-pill tag-new">当前生效</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="archive-actions">
+                        <a class="ghost-button small" href="{{ item.detail_url }}">查看详情</a>
+                    </div>
+                </article>
+            {% endfor %}
+        </div>
+    </section>
+
+    {% if detail.sections %}
+        <section class="page-card">
+            <div class="section-header">
+                <div>
+                    <p class="section-kicker">板块结果</p>
+                    <h3>该底稿解析出的板块状态</h3>
+                </div>
+            </div>
+            <div class="history-list">
+                {% for section in detail.sections %}
+                    <article class="library-card compact">
+                        <div class="archive-head">
+                            <div>
+                                <h4>{{ section.section_title }}</h4>
+                                <p>{{ section.note }}</p>
+                            </div>
+                            <span class="status-pill {{ section.status_class }}">{{ section.status }}</span>
+                        </div>
+                    </article>
+                {% endfor %}
+            </div>
+        </section>
+    {% endif %}
+{% endif %}
+{% endblock %}

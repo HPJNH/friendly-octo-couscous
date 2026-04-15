@@ -1,0 +1,48 @@
+# OS / editor
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Local config
+config/local_settings.json
+
+# Runtime data and evidence files
+data/database/*.db
+data/database/*.sqlite*
+data/processed/archive_parsed/**/*.json
+data/raw/**/*.docx
+data/raw/**/*.pdf
+data/raw/**/*.txt
+data/raw/**/*.md
+data/review/**
+data/verification/**
+
+# Local storage
+storage/cache/**
+storage/file_library/**
+storage/logs/**
+storage/uploads/**
+
+# Generated exports
+exports/pdf/**
+exports/reports/**
+exports/review_packages/**
+
+# Local archive snapshots
+archive/duplicates/**
+archive/legacy_docs/**

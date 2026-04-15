@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-card upload-page">
+    <div class="section-header">
+        <div>
+            <p class="section-kicker">上传中心</p>
+            <h3>上传研究底稿与每日分析简报</h3>
+            <p class="section-description">只有已完成管理验证的浏览器会话才能进入本页。系统会自动识别文件类型、提取正文、写入文件库并刷新当前生效版本。</p>
+        </div>
+    </div>
+
+    <div class="reading-note upload-note">
+        <p>支持格式：.docx / .md / .txt / .pdf。单个文件大小上限 {{ max_upload_size_mb }}MB。超出上限、格式不支持、解析失败或未完成管理验证时，系统都会明确提示。</p>
+    </div>
+
+    <form class="upload-form" method="post" enctype="multipart/form-data">
+        <label class="dropzone" for="files">
+            <input id="files" type="file" name="files" multiple accept=".docx,.md,.txt,.pdf">
+            <span class="dropzone-title">拖拽文件到这里，或点击选择文件</span>
+            <span class="dropzone-note">研究底稿常见名称包含“沉香行业情报研究底稿”，简报常见名称包含“每日分析简报 / 分析简报 / 简报”。</span>
+            <span class="dropzone-note">文件名中的日期会优先作为归档日期；没有日期时默认使用上传当天。</span>
+        </label>
+        <div class="selected-files" data-selected-files>尚未选择文件</div>
+        <div class="form-actions">
+            <button class="primary-button" type="submit">开始上传并自动处理</button>
+        </div>
+    </form>
+</section>
+
+{% if upload_results %}
+<section class="page-card">
+    <div class="section-header">
+        <div>
+            <p class="section-kicker">处理反馈</p>
+            <h3>本次上传结果</h3>
+        </div>
+    </div>
+
+    <div class="result-list">
+        {% for result in upload_results %}
+            <article class="result-card {% if result.success %}success{% else %}failed{% endif %}">
+                <div class="result-head">
+                    <h4>{{ result.original_name }}</h4>
+                    <span class="status-pill {{ 'tag-update' if result.success else 'tag-empty' }}">{{ '处理成功' if result.success else '处理失败' }}</span>
+                </div>
+                <p>{{ result.message }}</p>
+                <div class="result-meta">
+                    <span>识别类型：{{ result.document_type_label }}</span>
+                    <span>归档日期：{{ result.report_date or '未识别' }}</span>
+                    <span>识别说明：{{ result.recognition_note or '无' }}</span>
+                    <span>写入历史：{{ '是' if result.wrote_history else '否' }}</span>
+                    <span>是否新日期：{{ '是' if result.is_new_day else '否' }}</span>
+                    <span>是否覆盖旧版本：{{ '是' if result.updated_current_version else '否' }}</span>
+                </div>
+                {% if result.validation_errors %}
+                    <div class="reading-note">
+                        <strong>结构验证失败项</strong>
+                        <ul>
+                            {% for item in result.validation_errors %}
+                                <li>{{ item }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                {% endif %}
+                {% if result.validation_warnings %}
+                    <div class="reading-note">
+                        <strong>验证提醒</strong>
+                        <ul>
+                            {% for item in result.validation_warnings %}
+                                <li>{{ item }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                {% endif %}
+                {% if result.parse_report_lines %}
+                    <div class="reading-note">
+                        <strong>解析报告</strong>
+                        <ul>
+                            {% for item in result.parse_report_lines %}
+                                <li>{{ item }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                {% endif %}
+                {% if result.success and result.day_url %}
+                    <a class="card-link" href="{{ result.day_url }}">查看该日期页面</a>
+                {% endif %}
+            </article>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+<section class="page-card">
+    <div class="section-header">
+        <div>
+            <p class="section-kicker">最近归档</p>
+            <h3>最近几天的可查看记录</h3>
+        </div>
+    </div>
+
+    <div class="history-list">
+        {% if recent_days %}
+            {% for day in recent_days %}
+                <a class="history-card" href="{{ url_for('main.day', report_date=day.report_date) }}">
+                    <div>
+                        <h4>{{ day.report_date }}</h4>
+                        <p>简报：{{ '已上传' if day.has_brief else '未上传' }} / 底稿：{{ '已上传' if day.has_draft else '未上传' }}</p>
+                    </div>
+                    <span class="ghost-button small">打开</span>
+                </a>
+            {% endfor %}
+        {% else %}
+            <div class="empty-panel">
+                <p>还没有归档内容。</p>
+            </div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

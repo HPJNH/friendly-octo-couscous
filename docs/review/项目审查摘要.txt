@@ -1,0 +1,69 @@
+项目名称：沉香行业情报浏览系统_1.0
+
+项目定位：
+这是一个本地运行、本地保存、浏览器打开的情报浏览系统，不是爬虫，也不是自动写稿器。
+
+当前能做什么：
+1. 上传《沉香行业情报研究底稿》和《每日分析简报》
+2. 解析 docx/md/txt/pdf
+3. 把底稿拆成 10 个正式板块
+4. 首页先展示简报，再展示板块总览和历史入口
+5. 保存原始文件、解析结果和数据库历史
+6. 导出当天 PDF 成果
+
+核心技术：
+- Flask
+- SQLite
+- python-docx
+- pypdf
+- ReportLab
+
+最重要的代码文件：
+- app/parsers.py：文档解析、section 切分、表格提取
+- app/services.py：上传、入库、取数、状态判断、PDF 数据组装
+- app/rendering.py：页面渲染模型
+- app/pdf_export.py：PDF 导出
+- app/routes.py：网页路由
+- app/templates/section_detail.html：板块详情页
+- app/static/css/style.css：页面样式和导航布局
+
+当前最值得关注的问题：
+1. section 切分已经比早期稳定很多，但仍依赖固定一级标题写法
+2. 表格解析适合展示，不适合复杂 Word 表格的版式级还原
+3. “历史保留”状态和详情页正文展示之间还存在语义张力
+4. 历史记录会不断累积重复上传版本
+5. 数据库存了绝对路径，复制到另一台电脑后旧路径会失真
+6. PDF 是结构化导出，不是网页像素级打印
+
+最值得外部审查者重点看的地方：
+1. app/parsers.py 的一级标题识别是否够稳
+2. app/services.py 是否职责过重
+3. 历史记录和状态判断是否合理
+4. 迁移到另一台电脑是否足够稳
+5. PDF 导出是否已经足够适合成果展示
+
+如何运行：
+1. 安装依赖：python -m pip install -r requirements.txt
+2. 启动：python run.py
+3. 浏览器打开：http://127.0.0.1:5050
+
+重要目录：
+- uploads/originals/：原始文件
+- archive/parsed/：解析 JSON
+- database/intelligence_browser.db：数据库
+- exports/pdf/：导出的 PDF
+
+如果要复制到另一台电脑做独立审查：
+最稳妥的方法是直接复制整个项目文件夹。
+
+如果只做静态代码审查，至少复制：
+- app/
+- requirements.txt
+- run.py
+- README.md
+- PROJECT_REVIEW_PACKAGE.md
+- PROJECT_TREE.md
+- RUN_GUIDE.md
+- KEY_CODE_SUMMARY.md
+- KNOWN_ISSUES.md
+- REVIEW_REQUEST_FOR_GPT.md
