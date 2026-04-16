@@ -11,8 +11,11 @@ from pathlib import Path
 from flask import current_app
 
 from .constants import (
+    BRIEF_EXPORT_ENABLED,
+    BRIEF_UI_ENABLED,
     DOCUMENT_TYPE_LABELS,
     DRAFT_TAIL_PATTERNS,
+    FEATURED_SECTION_KEYS,
     FILE_STATUS_CLASS_MAP,
     FILE_STATUS_LABELS,
     PARSER_VERSION,
@@ -20,7 +23,12 @@ from .constants import (
     SECTION_KEY_ALIASES,
     SECTION_MAP,
     SECTION_ORDER,
+    SECTION_UI_GROUPS,
+    SOFT_HIDDEN_SECTION_KEYS,
     STATUS_CLASS_MAP,
+    VISIBLE_SECTION_DEFINITIONS,
+    VISIBLE_SECTION_MAP,
+    VISIBLE_SECTION_ORDER,
 )
 from .db import get_connection
 from .parsers import (
@@ -86,24 +94,64 @@ class ProcessingResult:
     parse_report_lines: list[str] = field(default_factory=list)
 
 
+def get_visible_section_rows(section_map: dict[str, dict]) -> list[dict]:
+    return [section_map[key] for key in VISIBLE_SECTION_ORDER if key in section_map]
+
+
+def group_sections_for_ui(section_map: dict[str, dict]) -> list[dict]:
+    groups = []
+    for group in SECTION_UI_GROUPS:
+        items = [section_map[key] for key in group["section_keys"] if key in section_map]
+        if not items:
+            continue
+        groups.append(
+            {
+                "key": group["key"],
+                "title": group["title"],
+                "description": group["description"],
+                "sections": items,
+            }
+        )
+    return groups
+
+
+def get_section_group_meta(section_key: str) -> dict:
+    for group in SECTION_UI_GROUPS:
+        if section_key in group["section_keys"]:
+            return group
+    return {"key": "hidden", "title": "隐藏板块", "description": "该板块当前仅保留历史回退能力。"}
+
+
 def get_layout_context(selected_date: str | None = None) -> dict:
     latest_date = get_latest_report_date()
     nav_date = selected_date or latest_date
-    sections = []
-    for section in SECTION_DEFINITIONS:
-        sections.append(
+    grouped_sections = []
+    for group in SECTION_UI_GROUPS:
+        items = []
+        for section_key in group["section_keys"]:
+            section = VISIBLE_SECTION_MAP[section_key]
+            items.append(
+                {
+                    "key": section["key"],
+                    "number": section["number"],
+                    "title": section["title"],
+                    "link": f"/section/{nav_date}/{section['key']}" if nav_date else None,
+                }
+            )
+        grouped_sections.append(
             {
-                "key": section["key"],
-                "number": section["number"],
-                "title": section["title"],
-                "link": f"/section/{nav_date}/{section['key']}" if nav_date else None,
+                "key": group["key"],
+                "title": group["title"],
+                "description": group["description"],
+                "items": items,
             }
         )
     debug_link = f"/debug/sections/{nav_date}" if nav_date else None
     export_link = f"/export/pdf/{nav_date}" if nav_date else None
     return {
         "latest_date": latest_date,
-        "sidebar_sections": sections,
+        "dashboard_link": f"/day/{nav_date}" if nav_date else "/",
+        "sidebar_section_groups": grouped_sections,
         "nav_date": nav_date,
         "debug_link": debug_link,
         "export_link": export_link,
@@ -919,30 +967,42 @@ def get_day_snapshot(report_date: str) -> dict:
         draft = get_current_document(connection, report_date, "draft")
         _draft_chain, cumulative_views = build_cumulative_section_views(connection, report_date)
         if cumulative_views:
-            sections = [build_section_card(connection, cumulative_views.get(section_key)) for section_key in SECTION_ORDER]
+            section_map = {
+                section_key: build_section_card(connection, cumulative_views.get(section_key))
+                for section_key in VISIBLE_SECTION_ORDER
+            }
         else:
-            sections = [empty_section_card(definition["key"]) for definition in SECTION_DEFINITIONS]
+            section_map = {definition["key"]: empty_section_card(definition["key"]) for definition in VISIBLE_SECTION_DEFINITIONS}
+
+    sections = get_visible_section_rows(section_map)
+    section_groups = group_sections_for_ui(section_map)
+    featured_sections = [section_map[key] for key in FEATURED_SECTION_KEYS if key in section_map and section_map[key]["display_content"]]
+    if not featured_sections:
+        featured_sections = [section_map[key] for key in FEATURED_SECTION_KEYS if key in section_map]
 
     section_status_counts = defaultdict(int)
     item_status_counts = defaultdict(int)
+    review_items = 0
     for section in sections:
         section_status_counts[section["status"]] += 1
         for label, count in section.get("item_status_counts", {}).items():
             item_status_counts[label] += count
+        review_items += section.get("needs_review_count", 0)
 
     sections_with_content = sum(1 for section in sections if section["display_content"])
     overview = {
         "date": report_date,
         "sections_with_content": sections_with_content,
-        "brief_uploaded": bool(brief),
         "draft_uploaded": bool(draft),
         "current_draft_date": draft["report_date"] if draft else get_latest_effective_date_by_type("draft"),
-        "current_brief_date": brief["report_date"] if brief else get_latest_effective_date_by_type("brief"),
+        "visible_sections": len(sections),
+        "featured_sections": sum(1 for section in featured_sections if section["display_content"]),
         "new_items": item_status_counts.get("新增", 0),
         "updated_items": item_status_counts.get("更新", 0),
         "background_items": item_status_counts.get("背景补充", 0),
         "retained_items": item_status_counts.get("历史保留", 0),
         "placeholder_items": item_status_counts.get("占位项", 0),
+        "review_items": review_items,
     }
 
     return {
@@ -950,10 +1010,17 @@ def get_day_snapshot(report_date: str) -> dict:
         "brief": build_brief_card(brief),
         "draft": build_draft_card(draft),
         "sections": sections,
+        "featured_sections": featured_sections,
+        "section_groups": section_groups,
         "status_counts": dict(section_status_counts),
         "item_status_counts": dict(item_status_counts),
         "overview": overview,
-        "has_any_content": bool(brief or draft),
+        "retained_assets": {
+            "brief_available": bool(brief),
+            "brief_title": brief["title"] if brief else "",
+            "brief_visible": BRIEF_UI_ENABLED,
+        },
+        "has_any_content": bool(sections_with_content or draft),
     }
 
 
@@ -997,6 +1064,7 @@ def empty_section_card(section_key: str) -> dict:
     definition = SECTION_MAP[section_key]
     return {
         "key": section_key,
+        "number": definition["number"],
         "title": definition["title"],
         "status": "无内容",
         "status_class": STATUS_CLASS_MAP["无内容"],
@@ -1009,12 +1077,14 @@ def empty_section_card(section_key: str) -> dict:
         "source_date": None,
         "similarity": None,
         "item_status_counts": {"新增": 0, "更新": 0, "背景补充": 0, "历史保留": 0, "占位项": 0, "无内容": 1},
+        "needs_review_count": 0,
     }
 
 
 def build_section_card(connection: sqlite3.Connection, row) -> dict:
     source_file_name = row["current_file_name"]
     render_payload = load_row_render_payload(row)
+    cards = extract_cards_from_render_payload(render_payload)
     preview_payload = build_section_preview_payload(render_payload, row["display_content"] or row["raw_content"] or "")
     status_counts = render_payload.get("status_counts") or {
         "新增": 1 if row["status"] == "新增" else 0,
@@ -1032,6 +1102,7 @@ def build_section_card(connection: sqlite3.Connection, row) -> dict:
     display_content = row["display_content"]
     return {
         "key": row["section_key"],
+        "number": SECTION_MAP[row["section_key"]]["number"],
         "title": row["section_title"],
         "status": row["status"],
         "status_class": STATUS_CLASS_MAP[row["status"]],
@@ -1046,6 +1117,7 @@ def build_section_card(connection: sqlite3.Connection, row) -> dict:
         "item_status_counts": status_counts,
         "preview_mode": preview_payload["mode"],
         "preview_cards": preview_payload["cards"],
+        "needs_review_count": sum(1 for card in cards if card.get("needs_review")),
     }
 
 
@@ -1590,12 +1662,14 @@ def get_history_overview(limit: int = 30) -> list[dict]:
             if not day["has_draft"]:
                 continue
             _draft_chain, cumulative_views = build_cumulative_section_views(connection, report_date)
-            for section_row in cumulative_views.values():
-                day["status_counts"][section_row["status"]] += 1
+            for section_key in VISIBLE_SECTION_ORDER:
+                section_row = cumulative_views.get(section_key)
+                if section_row:
+                    day["status_counts"][section_row["status"]] += 1
 
     ordered = sorted(days.values(), key=lambda item: item["report_date"], reverse=True)
     for day in ordered:
-        day["can_export"] = bool(day["has_brief"] or day["has_draft"])
+        day["can_export"] = bool(day["has_draft"])
     return ordered[:limit]
 
 
@@ -1628,6 +1702,8 @@ def get_section_detail(report_date: str, section_key: str) -> dict | None:
     parse_warning = ""
     if not has_effective_content:
         parse_warning = "本板块本日未解析出有效正文，请检查原始文档结构或解析结果。"
+    group_meta = get_section_group_meta(section_key)
+    is_soft_hidden = section_key in SOFT_HIDDEN_SECTION_KEYS
 
     return {
         "report_date": report_date,
@@ -1651,6 +1727,10 @@ def get_section_detail(report_date: str, section_key: str) -> dict | None:
         "day_url": f"/day/{report_date}",
         "export_url": f"/export/pdf/{report_date}",
         "filter_counts": render_model["status_counts"],
+        "group_title": group_meta["title"],
+        "group_description": group_meta["description"],
+        "is_soft_hidden": is_soft_hidden,
+        "visibility_note": "该板块已从主导航与导出结构中软移除，当前页面仅保留历史回退访问能力。" if is_soft_hidden else "",
         "history_rows": [
             {
                 "report_date": history_row["report_date"],
@@ -1710,8 +1790,8 @@ def get_section_debug_view(report_date: str) -> dict | None:
 
 def create_day_pdf_export(report_date: str) -> dict:
     payload = build_day_pdf_payload(report_date)
-    if not payload["summary"]["brief_uploaded"] and not payload["summary"]["draft_uploaded"]:
-        raise ValueError("当前日期还没有可导出的简报或底稿内容。")
+    if not payload["summary"]["draft_uploaded"] and not payload["summary"]["available_sections"]:
+        raise ValueError("当前日期还没有可导出的有效底稿内容。")
 
     filename = f"沉香行业情报浏览成果_{report_date}.pdf"
     export_path = current_app.config["EXPORT_ROOT"] / filename
@@ -1780,9 +1860,8 @@ def build_day_pdf_payload(report_date: str) -> dict:
         draft_row = get_current_document(connection, report_date, "draft")
         _draft_chain, cumulative_views = build_cumulative_section_views(connection, report_date)
 
-    brief_payload = build_pdf_brief_payload(brief_row)
     section_payloads = []
-    for definition in SECTION_DEFINITIONS:
+    for definition in VISIBLE_SECTION_DEFINITIONS:
         row = cumulative_views.get(definition["key"]) if cumulative_views else None
         metadata = load_json(row["metadata_json"], {}) if row else {}
         render_model = metadata.get("display_render") if row else fallback_render_payload(definition["title"], "", "无内容")
@@ -1802,21 +1881,22 @@ def build_day_pdf_payload(report_date: str) -> dict:
         )
 
     summary = {
-        "brief_uploaded": bool(brief_row),
         "draft_uploaded": bool(draft_row),
         "available_sections": sum(1 for item in section_payloads if item["has_effective_content"]),
         "new_sections": sum(1 for item in section_payloads if item["status"] == "新增"),
+        "updated_sections": sum(1 for item in section_payloads if item["status"] == "更新"),
     }
     return {
         "report_date": report_date,
         "export_time": now_string(),
         "files": {
-            "brief_name": brief_row["original_name"] if brief_row else "",
             "draft_name": draft_row["original_name"] if draft_row else "",
         },
         "summary": summary,
-        "brief": build_pdf_brief_payload(brief_row),
         "sections": section_payloads,
+        "retained_assets": {
+            "brief_available": bool(brief_row) and not BRIEF_EXPORT_ENABLED,
+        },
     }
 
 
@@ -1925,7 +2005,7 @@ def get_file_library_view() -> dict:
 
     drafts = []
     briefs = []
-    archived_files = []
+    archived_drafts = []
     exports = []
     summary = defaultdict(int)
 
@@ -1937,10 +2017,13 @@ def get_file_library_view() -> dict:
             summary["current_effective"] += 1
         if row["doc_type"] == "draft":
             drafts.append(item)
+            if row["is_current"] and row["lifecycle_status"] == "active":
+                summary["current_effective_drafts"] += 1
+            if row["lifecycle_status"] != "active":
+                archived_drafts.append(item)
         elif row["doc_type"] == "brief":
             briefs.append(item)
-        if row["lifecycle_status"] != "active":
-            archived_files.append(item)
+            summary["retained_assets"] += 1
 
     for row in export_rows:
         exports.append(build_library_export_row(row))
@@ -1951,7 +2034,8 @@ def get_file_library_view() -> dict:
         "drafts": drafts,
         "briefs": briefs,
         "exports": exports,
-        "archived_files": archived_files,
+        "archived_files": archived_drafts,
+        "current_draft": next((item for item in drafts if item["is_current"]), None),
     }
 
 

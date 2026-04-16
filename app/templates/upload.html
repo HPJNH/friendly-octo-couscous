@@ -5,20 +5,27 @@
     <div class="section-header">
         <div>
             <p class="section-kicker">上传中心</p>
-            <h3>上传研究底稿与每日分析简报</h3>
-            <p class="section-description">只有已完成管理验证的浏览器会话才能进入本页。系统会自动识别文件类型、提取正文、写入文件库并刷新当前生效版本。</p>
+            <h3>上传研究底稿并更新当前有效视图</h3>
+            <p class="section-description">当前主流程以研究底稿为核心。简报能力仍然保留，但已退出主展示链，上传后只会作为保留资产进入文件库。</p>
         </div>
     </div>
 
-    <div class="reading-note upload-note">
-        <p>支持格式：.docx / .md / .txt / .pdf。单个文件大小上限 {{ max_upload_size_mb }}MB。超出上限、格式不支持、解析失败或未完成管理验证时，系统都会明确提示。</p>
+    <div class="upload-layout">
+        <div class="reading-note upload-note">
+            <p>支持格式：.docx / .md / .txt / .pdf。单个文件大小上限 {{ max_upload_size_mb }}MB。超出上限、格式不支持、解析失败或未完成管理验证时，系统都会明确提示。</p>
+        </div>
+        <div class="meta-box upload-tip-card">
+            <span class="meta-label">当前建议流程</span>
+            <strong>优先上传研究底稿</strong>
+            <p>底稿会刷新首页、板块详情页、历史视图和 PDF 导出。每日简报如继续上传，只保留在文件库的隐藏资产区，用于回退和追溯。</p>
+        </div>
     </div>
 
     <form class="upload-form" method="post" enctype="multipart/form-data">
         <label class="dropzone" for="files">
             <input id="files" type="file" name="files" multiple accept=".docx,.md,.txt,.pdf">
             <span class="dropzone-title">拖拽文件到这里，或点击选择文件</span>
-            <span class="dropzone-note">研究底稿常见名称包含“沉香行业情报研究底稿”，简报常见名称包含“每日分析简报 / 分析简报 / 简报”。</span>
+            <span class="dropzone-note">研究底稿常见名称包含“沉香行业情报研究底稿”；每日简报如继续上传，会被识别为保留资产，不再进入首页主视觉。</span>
             <span class="dropzone-note">文件名中的日期会优先作为归档日期；没有日期时默认使用上传当天。</span>
         </label>
         <div class="selected-files" data-selected-files>尚未选择文件</div>
@@ -106,7 +113,7 @@
                 <a class="history-card" href="{{ url_for('main.day', report_date=day.report_date) }}">
                     <div>
                         <h4>{{ day.report_date }}</h4>
-                        <p>简报：{{ '已上传' if day.has_brief else '未上传' }} / 底稿：{{ '已上传' if day.has_draft else '未上传' }}</p>
+                        <p>底稿：{{ '已上传' if day.has_draft else '未上传' }}</p>
                     </div>
                     <span class="ghost-button small">打开</span>
                 </a>

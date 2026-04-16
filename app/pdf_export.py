@@ -170,8 +170,6 @@ def build_styles() -> StyleSheet1:
 
 def build_story(payload: dict, styles: StyleSheet1, doc_width: float) -> list:
     story = build_cover_story(payload, styles, doc_width)
-    story.append(PageBreak())
-    story.extend(build_brief_story(payload, styles, doc_width))
 
     for section in payload["sections"]:
         story.append(PageBreak())
@@ -185,13 +183,13 @@ def build_cover_story(payload: dict, styles: StyleSheet1, doc_width: float) -> l
     facts = [
         ("数据日期", payload["report_date"]),
         ("导出时间", payload["export_time"]),
-        ("当日简报", "已上传" if summary["brief_uploaded"] else "未上传"),
         ("当日底稿", "已上传" if summary["draft_uploaded"] else "未上传"),
         ("有内容板块数", str(summary["available_sections"])),
         ("新增板块数", str(summary["new_sections"])),
-        ("简报文件", payload["files"].get("brief_name") or "未上传"),
+        ("更新板块数", str(summary.get("updated_sections", 0))),
         ("底稿文件", payload["files"].get("draft_name") or "未上传"),
     ]
+    section_titles = " / ".join(section["title"] for section in payload["sections"])
     return [
         Spacer(1, 24 * mm),
         Paragraph("沉香行业情报浏览成果", styles["PdfCoverTitle"]),
@@ -204,36 +202,10 @@ def build_cover_story(payload: dict, styles: StyleSheet1, doc_width: float) -> l
         build_fact_table(facts, doc_width, styles, columns=2),
         Spacer(1, 6 * mm),
         Paragraph(
-            "正式板块顺序：报告说明 / 自身品牌提醒 / 重点对象动态 / 自身主赛道情报 / 邻近参考品牌观察 / "
-            "主题型赛道观察 / 消费趋势与市场风向 / 政策与企业发展情报 / 国际区市场动态 / 抖音内容与博主监测",
+            f"当前导出板块顺序：{escape_inline(section_titles)}",
             styles["PdfBodyMuted"],
         ),
     ]
-
-
-def build_brief_story(payload: dict, styles: StyleSheet1, doc_width: float) -> list:
-    brief = payload["brief"]
-    story = [
-        Paragraph("每日分析简报", styles["PdfSectionTitle"]),
-        Paragraph(
-            f"日期：{payload['report_date']}　　来源文件：{escape_inline(brief.get('original_name') or '未上传')}",
-            styles["PdfBodyMuted"],
-        ),
-        Spacer(1, 4 * mm),
-    ]
-
-    if not brief["available"]:
-        story.append(build_notice_box("当日未上传《每日分析简报》。", styles, doc_width))
-        return story
-
-    story.append(Paragraph(escape_inline(brief["title"]), styles["PdfGroupTitle"]))
-    brief_blocks = list(brief["blocks"])
-    if brief_blocks and brief_blocks[0].get("type") in {"paragraph", "heading"}:
-        first_text = (brief_blocks[0].get("text") or "").strip()
-        if first_text == brief["title"]:
-            brief_blocks = brief_blocks[1:]
-    story.extend(build_block_story(brief_blocks, styles, doc_width))
-    return story
 
 
 def build_section_story(section: dict, styles: StyleSheet1, doc_width: float) -> list:

@@ -5,8 +5,8 @@
     <div class="section-header">
         <div>
             <p class="section-kicker">历史归档</p>
-            <h3>按日期回看每日简报与研究底稿</h3>
-            <p class="section-description">每一天都保留简报、底稿、版本状态与导出入口，便于快速回看和横向比对。</p>
+            <h3>按日期回看累计有效情报</h3>
+            <p class="section-description">历史页以底稿版本、状态变化与导出入口为主。今日报告主链已退出主展示，只保留底稿驱动的累计有效视图。</p>
         </div>
     </div>
 
@@ -17,7 +17,7 @@
                     <div class="archive-head">
                         <div>
                             <h4>{{ day.report_date }}</h4>
-                            <p>简报：{{ '已上传' if day.has_brief else '缺失' }} / 底稿：{{ '已上传' if day.has_draft else '缺失' }}</p>
+                            <p>底稿：{{ '已上传' if day.has_draft else '缺失' }}</p>
                         </div>
                         <div class="archive-actions">
                             <a class="primary-button small" href="{{ url_for('main.day', report_date=day.report_date) }}">打开当日页面</a>
@@ -46,14 +46,10 @@
                     </div>
 
                     <div class="file-notes">
-                        {% if day.brief_name %}
-                            <p>简报文件：{{ day.brief_name }}</p>
-                        {% endif %}
                         {% if day.draft_name %}
                             <p>底稿文件：{{ day.draft_name }}</p>
                         {% endif %}
                         <p>底稿版本：启用 {{ day.draft_versions.get('active', 0) }} / 已撤回 {{ day.draft_versions.get('withdrawn', 0) }} / 已归档 {{ day.draft_versions.get('archived', 0) }}</p>
-                        <p>简报版本：启用 {{ day.brief_versions.get('active', 0) }} / 已撤回 {{ day.brief_versions.get('withdrawn', 0) }} / 已归档 {{ day.brief_versions.get('archived', 0) }}</p>
                     </div>
                 </article>
             {% endfor %}

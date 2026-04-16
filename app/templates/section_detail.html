@@ -1,8 +1,11 @@
 {% extends "base.html" %}
 
 {% macro evidence_drawer(card, report_date) -%}
-<details class="evidence-drawer">
-    <summary>查看来源与证据链</summary>
+<details class="evidence-drawer evidence-sheet">
+    <summary>
+        <span>查看来源与证据链</span>
+        <span class="meta-chip soft">主来源{% if card.supporting_sources %} + {{ card.supporting_sources|length }} 支撑{% endif %}</span>
+    </summary>
     <div class="evidence-grid">
         <div class="drawer-item">
             <span class="meta-label">主来源</span>
@@ -54,16 +57,18 @@
             <h3>{{ detail.title }}</h3>
             <div class="reading-meta">
                 <span class="info-chip">日期 {{ detail.report_date }}</span>
+                <span class="info-chip">{{ detail.group_title }}</span>
                 <span class="info-chip muted">{{ detail.render_model.template_label }}</span>
             </div>
         </div>
         <span class="status-pill large {{ detail.status_class }}">{{ detail.status }}</span>
     </div>
     <div class="detail-actions">
-        <a class="ghost-button" href="{{ detail.day_url }}#brief-section">回到今日简报</a>
-        <a class="ghost-button" href="{{ url_for('main.day', report_date=detail.report_date) }}">返回首页</a>
-        <a class="ghost-button" href="{{ detail.export_url }}?next={{ request.path }}">导出今日 PDF</a>
-        <a class="ghost-button" href="{{ detail.debug_url }}">查看解析调试</a>
+        <a class="ghost-button" href="{{ url_for('main.day', report_date=detail.report_date) }}">返回今日总览</a>
+        <a class="ghost-button" href="{{ detail.export_url }}?next={{ request.path }}">导出当前 PDF</a>
+        {% if access_role == 'admin' %}
+            <a class="ghost-button" href="{{ detail.debug_url }}">查看解析调试</a>
+        {% endif %}
         <a class="ghost-button" href="#" onclick="history.back(); return false;">返回上一页</a>
     </div>
 </section>
@@ -71,6 +76,12 @@
 <section class="reading-note">
     <p>{{ detail.note }}</p>
 </section>
+
+{% if detail.visibility_note %}
+    <section class="page-card inline-note soft-hidden-note">
+        <p>{{ detail.visibility_note }}</p>
+    </section>
+{% endif %}
 
 {% if detail.parse_warning %}
     <section class="page-card warning-panel">

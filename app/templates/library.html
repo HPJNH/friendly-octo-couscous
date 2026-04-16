@@ -5,8 +5,8 @@
     <div class="section-header">
         <div>
             <p class="section-kicker">文件库</p>
-            <h3>集中管理底稿、简报与导出成果</h3>
-            <p class="section-description">浏览需要先通过访问码验证；撤回、删除、激活和版本切换等会影响数据状态的操作，需要管理员权限。</p>
+            <h3>集中管理底稿、导出成果与保留资产</h3>
+            <p class="section-description">文件库主视图只突出当前生效底稿、历史底稿版本与导出成果；今日报告相关文件已降级为保留资产，仅用于回退和追溯。</p>
         </div>
         {% if access_role == 'admin' %}
             <a class="ghost-button" href="{{ url_for('main.access_manage') }}">管理访问资格</a>
@@ -16,16 +16,16 @@
     </div>
     <div class="overview-strip library-summary">
         <article class="overview-tile">
-            <span>当前生效文件</span>
-            <strong>{{ library_view.summary.get('current_effective', 0) }}</strong>
+            <span>当前生效底稿</span>
+            <strong>{{ library_view.summary.get('current_effective_drafts', 0) }}</strong>
         </article>
         <article class="overview-tile">
-            <span>已归档文件</span>
-            <strong>{{ library_view.summary.get('archived', 0) }}</strong>
+            <span>历史底稿版本</span>
+            <strong>{{ library_view.archived_files | length }}</strong>
         </article>
         <article class="overview-tile">
-            <span>已撤回文件</span>
-            <strong>{{ library_view.summary.get('withdrawn', 0) }}</strong>
+            <span>保留资产</span>
+            <strong>{{ library_view.summary.get('retained_assets', 0) }}</strong>
         </article>
         <article class="overview-tile">
             <span>导出文件</span>
@@ -88,7 +88,6 @@
     <div class="file-notes">
         <p>上传时间：{{ item.uploaded_at }}</p>
         <p>归档日期：{{ item.report_date }}</p>
-        <p class="path-muted">{{ item.stored_path }}</p>
     </div>
     <div class="archive-actions">
         <a class="ghost-button small" href="{{ item.detail_url }}">查看详情</a>
@@ -99,6 +98,26 @@
     </div>
 </article>
 {%- endmacro %}
+
+{% if library_view.current_draft %}
+<section class="hero-card library-hero">
+    <div class="hero-head">
+        <div>
+            <p class="section-kicker">当前生效底稿</p>
+            <h3>{{ library_view.current_draft.name }}</h3>
+            <p class="hero-subtitle">当前主界面的累计有效视图和 PDF 导出，都以这条生效底稿版本链为核心。</p>
+        </div>
+        <div class="hero-meta">
+            <span class="status-pill {{ library_view.current_draft.status_class }}">{{ library_view.current_draft.status_label }}</span>
+            <span class="info-chip">归档日期 {{ library_view.current_draft.report_date }}</span>
+        </div>
+    </div>
+    <div class="detail-actions">
+        <a class="primary-button" href="{{ library_view.current_draft.detail_url }}">查看文件详情</a>
+        <a class="ghost-button" href="{{ library_view.current_draft.download_url }}">下载原件</a>
+    </div>
+</section>
+{% endif %}
 
 <section class="page-card">
     <div class="section-header">
@@ -112,22 +131,6 @@
             {{ file_card(item) }}
         {% else %}
             <div class="empty-panel"><p>文件库里还没有研究底稿。</p></div>
-        {% endfor %}
-    </div>
-</section>
-
-<section class="page-card">
-    <div class="section-header">
-        <div>
-            <p class="section-kicker">每日简报</p>
-            <h3>简报文件版本</h3>
-        </div>
-    </div>
-    <div class="history-list">
-        {% for item in library_view.briefs %}
-            {{ file_card(item) }}
-        {% else %}
-            <div class="empty-panel"><p>文件库里还没有每日简报。</p></div>
         {% endfor %}
     </div>
 </section>
@@ -151,8 +154,8 @@
 <section class="page-card">
     <div class="section-header">
         <div>
-            <p class="section-kicker">归档旧文件</p>
-            <h3>已归档与已撤回的历史版本</h3>
+            <p class="section-kicker">历史底稿</p>
+            <h3>已归档与已撤回的底稿版本</h3>
         </div>
     </div>
     <div class="history-list">
@@ -162,5 +165,25 @@
             <div class="empty-panel"><p>当前没有需要单独处理的历史版本。</p></div>
         {% endfor %}
     </div>
+</section>
+
+<section class="page-card soft-hidden-collection">
+    <div class="section-header">
+        <div>
+            <p class="section-kicker">保留资产</p>
+            <h3>隐藏类型与历史回退文件</h3>
+            <p class="section-description">以下文件不再参与主界面展示，但会继续保留在库中，便于后续回退、核对和追溯。</p>
+        </div>
+    </div>
+    <details class="meta-drawer" {% if access_role == 'admin' %}open{% endif %}>
+        <summary>查看每日简报等保留资产（{{ library_view.briefs | length }}）</summary>
+        <div class="history-list soft-hidden-list">
+            {% for item in library_view.briefs %}
+                {{ file_card(item) }}
+            {% else %}
+                <div class="empty-panel"><p>当前没有需要保留的隐藏资产。</p></div>
+            {% endfor %}
+        </div>
+    </details>
 </section>
 {% endblock %}

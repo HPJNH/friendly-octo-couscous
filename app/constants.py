@@ -69,6 +69,53 @@ SECTION_KEY_ALIASES = {
     "consumer_trends": "consumption_trends",
     "policy_enterprise": "policy_env",
 }
+SOFT_HIDDEN_SECTION_KEYS = {"douyin_monitoring"}
+VISIBLE_SECTION_DEFINITIONS = [
+    item for item in SECTION_DEFINITIONS if item["key"] not in SOFT_HIDDEN_SECTION_KEYS
+]
+VISIBLE_SECTION_ORDER = [item["key"] for item in VISIBLE_SECTION_DEFINITIONS]
+VISIBLE_SECTION_MAP = {item["key"]: item for item in VISIBLE_SECTION_DEFINITIONS}
+SECTION_UI_GROUPS = [
+    {
+        "key": "core",
+        "title": "核心情报",
+        "description": "优先查看变化最快、判断价值最高的核心情报。",
+        "section_keys": [
+            "focus_targets",
+            "own_track",
+            "policy_env",
+            "consumption_trends",
+            "international_market",
+        ],
+    },
+    {
+        "key": "reference",
+        "title": "参考观察",
+        "description": "补充品牌、主题与参考样本的持续观察。",
+        "section_keys": [
+            "brand_alert",
+            "reference_brands",
+            "themed_tracks",
+        ],
+    },
+    {
+        "key": "method",
+        "title": "说明与方法",
+        "description": "查看本期口径、编制原则与阅读边界。",
+        "section_keys": [
+            "report_note",
+        ],
+    },
+]
+FEATURED_SECTION_KEYS = [
+    "focus_targets",
+    "own_track",
+    "policy_env",
+    "consumption_trends",
+    "international_market",
+]
+BRIEF_UI_ENABLED = False
+BRIEF_EXPORT_ENABLED = False
 PARSER_VERSION = "7.0"
 
 DRAFT_MAIN_TITLE = "沉香行业情报研究底稿"

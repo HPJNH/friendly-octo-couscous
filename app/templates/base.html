@@ -51,7 +51,7 @@
                 <header class="sidebar-header">
                     <div class="sidebar-header-copy">
                         <p class="brand-kicker">沉香情报</p>
-                        <h1 class="sidebar-title">浏览导航</h1>
+                        <h1 class="sidebar-title">行业记忆</h1>
                         <p class="sidebar-mode-text">
                             当前模式：<strong data-view-mode-menu>桌面版</strong>
                         </p>
@@ -63,43 +63,18 @@
 
                 <div class="sidebar-scroll" data-menu-scroll>
                     <section class="sidebar-intro">
-                        <p class="brand-kicker">本地行业记忆系统</p>
+                        <p class="brand-kicker">累计有效视图</p>
                         <h2>{{ project_name }}</h2>
-                        <p class="brand-note">围绕今日判断、历史留存、版本归档与证据链展示展开，服务内部研究和管理浏览。</p>
+                        <p class="brand-note">当前主界面只保留累计有效情报、历史留存、版本归档与证据链展示；今日报告主链已下线，抖音监测已转为隐藏回退板块。</p>
                     </section>
 
                     <nav class="sidebar-nav">
                         <section class="nav-group">
-                            <p class="nav-group-title">今日浏览</p>
-                            <a class="nav-link {% if current_page == 'home' %}active{% endif %}" data-menu-link href="{{ url_for('main.index') }}">
-                                <span class="nav-link-index">今日</span>
-                                <span class="nav-link-text">今日简报</span>
+                            <p class="nav-group-title">总览入口</p>
+                            <a class="nav-link {% if current_page == 'home' %}active{% endif %}" data-menu-link href="{{ dashboard_link }}">
+                                <span class="nav-link-index">总览</span>
+                                <span class="nav-link-text">今日总览</span>
                             </a>
-                        </section>
-
-                        <section class="nav-group">
-                            <p class="nav-group-title">底稿板块</p>
-                            {% for item in sidebar_sections %}
-                                {% if item.link %}
-                                    <a
-                                        class="nav-link {% if current_page == 'section' and detail and detail.section_key == item.key %}active{% endif %}"
-                                        data-menu-link
-                                        href="{{ item.link }}"
-                                    >
-                                        <span class="nav-link-index">{{ "%02d"|format(loop.index) }}</span>
-                                        <span class="nav-link-text">{{ item.title }}</span>
-                                    </a>
-                                {% else %}
-                                    <span class="nav-link disabled">
-                                        <span class="nav-link-index">{{ "%02d"|format(loop.index) }}</span>
-                                        <span class="nav-link-text">{{ item.title }}</span>
-                                    </span>
-                                {% endif %}
-                            {% endfor %}
-                        </section>
-
-                        <section class="nav-group">
-                            <p class="nav-group-title">系统功能</p>
                             <a class="nav-link {% if current_page == 'history' %}active{% endif %}" data-menu-link href="{{ url_for('main.history') }}">
                                 <span class="nav-link-index">历史</span>
                                 <span class="nav-link-text">历史记录</span>
@@ -108,6 +83,34 @@
                                 <span class="nav-link-index">文件</span>
                                 <span class="nav-link-text">文件库</span>
                             </a>
+                        </section>
+
+                        {% for group in sidebar_section_groups %}
+                            <section class="nav-group">
+                                <p class="nav-group-title">{{ group.title }}</p>
+                                <p class="nav-group-caption">{{ group.description }}</p>
+                                {% for item in group["items"] %}
+                                    {% if item.link %}
+                                        <a
+                                            class="nav-link {% if current_page == 'section' and detail and detail.section_key == item.key %}active{% endif %}"
+                                            data-menu-link
+                                            href="{{ item.link }}"
+                                        >
+                                            <span class="nav-link-index">{{ "%02d"|format(item.number) }}</span>
+                                            <span class="nav-link-text">{{ item.title }}</span>
+                                        </a>
+                                    {% else %}
+                                        <span class="nav-link disabled">
+                                            <span class="nav-link-index">{{ "%02d"|format(item.number) }}</span>
+                                            <span class="nav-link-text">{{ item.title }}</span>
+                                        </span>
+                                    {% endif %}
+                                {% endfor %}
+                            </section>
+                        {% endfor %}
+
+                        <section class="nav-group">
+                            <p class="nav-group-title">管理入口</p>
                             {% if access_role == 'admin' %}
                                 <a class="nav-link {% if current_page == 'upload' %}active{% endif %}" data-menu-link href="{{ url_for('main.upload') }}">
                                     <span class="nav-link-index">上传</span>
@@ -186,8 +189,9 @@
             <header class="topbar">
                 <div class="topbar-main">
                     <div class="topbar-copy">
-                        <p class="topbar-kicker">浏览日期</p>
+                        <p class="topbar-kicker">累计有效情报视图</p>
                         <h2>{{ nav_date or latest_date or '尚未生成日页面' }}</h2>
+                        <p class="topbar-summary">当前页面聚焦可见板块、历史累计和证据链。今日报告主链与抖音监测入口已从主 UI 软移除。</p>
                     </div>
                     <div class="topbar-mode">
                         <span class="topbar-mode-label">当前模式</span>
@@ -197,7 +201,7 @@
                 <div class="topbar-actions">
                     <span class="meta-chip">{{ access_label }}</span>
                     {% if export_link %}
-                        <a class="ghost-button" href="{{ export_link }}?next={{ request.path }}">导出今日 PDF</a>
+                        <a class="ghost-button" href="{{ export_link }}?next={{ request.path }}">导出当前 PDF</a>
                     {% endif %}
                     {% if debug_link and access_role == 'admin' %}
                         <a class="ghost-button" href="{{ debug_link }}">解析调试</a>
