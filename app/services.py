@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import zipfile
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -48,7 +49,12 @@ from .rebuild_engine import (
     build_repaired_section_views,
     rebuild_repaired_entries,
 )
-from .rendering import build_brief_html, build_section_render_payload, extract_cards_from_render_payload
+from .rendering import (
+    build_brief_html,
+    build_section_render_payload,
+    extract_cards_from_render_payload,
+    normalize_render_payload,
+)
 from .utils import (
     build_excerpt,
     compact_text,
@@ -120,6 +126,49 @@ def get_section_group_meta(section_key: str) -> dict:
         if section_key in group["section_keys"]:
             return group
     return {"key": "hidden", "title": "隐藏板块", "description": "该板块当前仅保留历史回退能力。"}
+
+
+def _looks_like_text(sample: bytes) -> bool:
+    if not sample:
+        return True
+    if sample.startswith((b"\xff\xfe", b"\xfe\xff", b"\xef\xbb\xbf")):
+        return True
+    if b"\x00" in sample:
+        return False
+    for encoding in ("utf-8", "utf-8-sig", "gb18030"):
+        try:
+            sample.decode(encoding)
+            return True
+        except UnicodeDecodeError:
+            continue
+    return False
+
+
+def validate_uploaded_file_signature(file_path: Path, extension: str) -> tuple[bool, str]:
+    sample = file_path.read_bytes()[:4096]
+    if extension == ".pdf":
+        if sample.startswith(b"%PDF-"):
+            return True, "application/pdf"
+        return False, "该文件扩展名为 .pdf，但文件头不是有效的 PDF 签名。"
+
+    if extension == ".docx":
+        if not zipfile.is_zipfile(file_path):
+            return False, "该文件扩展名为 .docx，但实际内容不是有效的 Office 文档压缩包。"
+        try:
+            with zipfile.ZipFile(file_path) as archive:
+                names = set(archive.namelist())
+        except zipfile.BadZipFile:
+            return False, "该文件扩展名为 .docx，但压缩结构已损坏，无法作为有效底稿读取。"
+        if "[Content_Types].xml" in names and any(name.startswith("word/") for name in names):
+            return True, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        return False, "该文件扩展名为 .docx，但内部结构不符合 Word 文档格式。"
+
+    if extension in {".md", ".txt"}:
+        if _looks_like_text(sample):
+            return True, "text/plain"
+        return False, f"该文件扩展名为 {extension}，但内容更像二进制文件，无法按文本处理。"
+
+    return False, "不支持的文件类型。"
 
 
 def get_layout_context(selected_date: str | None = None) -> dict:
@@ -217,20 +266,42 @@ def process_single_file(file_storage) -> ProcessingResult:
     temp_path = temp_dir / saved_name
     file_storage.save(temp_path)
 
+    valid_signature, signature_result = validate_uploaded_file_signature(temp_path, extension)
+    if not valid_signature:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return ProcessingResult(
+            success=False,
+            original_name=original_name,
+            saved_name=saved_name,
+            report_date=report_date,
+            message=signature_result,
+        )
+    detected_mime = signature_result
+
     try:
         fallback_content = extract_text(temp_path)
     except UnsupportedFileError as error:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return ProcessingResult(
             success=False,
             original_name=original_name,
             saved_name=saved_name,
             report_date=report_date,
             message=str(error),
-            stored_path=str(temp_path),
         )
 
     doc_type, recognition_note = detect_document_type(original_name, fallback_content)
     if doc_type == "unknown":
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return ProcessingResult(
             success=False,
             original_name=original_name,
@@ -240,7 +311,6 @@ def process_single_file(file_storage) -> ProcessingResult:
             document_type_label=DOCUMENT_TYPE_LABELS[doc_type],
             recognition_note=recognition_note,
             message="系统未能识别文件属于研究底稿还是每日分析简报，请调整文件名后重新上传。",
-            stored_path=str(temp_path),
         )
 
     validation_result = None
@@ -275,6 +345,7 @@ def process_single_file(file_storage) -> ProcessingResult:
     temp_path.replace(final_path)
 
     parsed_document = parse_document(final_path, doc_type, fallback_content, report_date)
+    parsed_document["document_metadata"]["detected_mime"] = detected_mime
     if validation_result:
         parsed_document["document_metadata"]["validation_report"] = validation_result["report"]
         parsed_document["document_metadata"]["validation_warnings"] = validation_warnings
@@ -1695,7 +1766,9 @@ def get_section_detail(report_date: str, section_key: str) -> dict | None:
         history_rows = build_repaired_section_history(connection, report_date, section_key, limit=8)
 
     metadata = load_json(row["metadata_json"], {})
-    render_model = metadata.get("display_render") or metadata.get("raw_render") or fallback_render_payload(row["section_title"], row["raw_content"], row["status"])
+    render_model = normalize_render_payload(
+        metadata.get("display_render") or metadata.get("raw_render") or fallback_render_payload(row["section_title"], row["raw_content"], row["status"])
+    )
     render_model.setdefault("status_counts", infer_render_status_counts(row["status"], render_model, row["display_content"] or row["raw_content"] or ""))
     raw_content = row["raw_content"] or ""
     has_effective_content = bool(raw_content.strip())
@@ -1864,7 +1937,9 @@ def build_day_pdf_payload(report_date: str) -> dict:
     for definition in VISIBLE_SECTION_DEFINITIONS:
         row = cumulative_views.get(definition["key"]) if cumulative_views else None
         metadata = load_json(row["metadata_json"], {}) if row else {}
-        render_model = metadata.get("display_render") if row else fallback_render_payload(definition["title"], "", "无内容")
+        render_model = normalize_render_payload(
+            metadata.get("display_render") if row else fallback_render_payload(definition["title"], "", "无内容")
+        )
         raw_content = (row["raw_content"] if row else "") or ""
         section_payloads.append(
             {
@@ -1959,6 +2034,7 @@ def load_row_render_payload(row) -> dict:
     metadata = load_json(row["metadata_json"], {})
     render_payload = metadata.get("display_render") or metadata.get("raw_render")
     if render_payload:
+        render_payload = normalize_render_payload(render_payload)
         render_payload.setdefault("status_counts", infer_render_status_counts(row["status"], render_payload, row["display_content"] or row["raw_content"] or ""))
         return render_payload
     section_title = row["section_title"] if "section_title" in row.keys() else row["section_key"]

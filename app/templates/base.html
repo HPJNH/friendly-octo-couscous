@@ -176,6 +176,7 @@
                                     <a class="ghost-button small full-width" href="{{ url_for('main.admin_verify', next=request.path) }}">切换为管理员</a>
                                 {% endif %}
                                 <form method="post" action="{{ url_for('main.access_logout') }}">
+                                    {{ csrf_input() }}
                                     <button type="submit" class="ghost-button small full-width">退出当前会话</button>
                                 </form>
                             </div>
@@ -200,6 +201,7 @@
                 </div>
                 <div class="topbar-actions">
                     <span class="meta-chip">{{ access_label }}</span>
+                    <span class="meta-chip soft">{{ "管理权限已验证" if admin_verified else "当前仅浏览" }}</span>
                     {% if export_link %}
                         <a class="ghost-button" href="{{ export_link }}?next={{ request.path }}">导出当前 PDF</a>
                     {% endif %}

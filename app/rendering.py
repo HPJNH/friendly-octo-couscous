@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 from typing import Any
 
@@ -29,9 +30,169 @@ DATE_HINT_PATTERN = re.compile(
 )
 
 
+def text_or_empty(value: Any) -> str:
+    if value is None or callable(value):
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def parse_supporting_source_items(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped or stripped in {"[]", "{}", "null", "None"}:
+            return []
+        if stripped[0] in "[{":
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                return [stripped]
+            if isinstance(parsed, list):
+                return parsed
+            if isinstance(parsed, dict):
+                return [parsed]
+            return [stripped]
+        return [stripped]
+    return [value]
+
+
+def build_supporting_source_key(source: dict[str, str], include_time: bool = True) -> tuple[str, ...]:
+    normalized_url = normalize_compare_text(source.get("source_url", ""))
+    if normalized_url:
+        return ("url", normalized_url)
+
+    normalized_title = normalize_compare_text(source.get("display_title", ""))
+    normalized_source_name = normalize_compare_text(source.get("source_name", ""))
+    normalized_time = normalize_compare_text(source.get("time_text", ""))
+
+    if normalized_title and normalized_source_name:
+        if include_time and normalized_time:
+            return ("title-source-time", normalized_title, normalized_source_name, normalized_time)
+        return ("title-source", normalized_title, normalized_source_name)
+    if normalized_title and include_time and normalized_time:
+        return ("title-time", normalized_title, normalized_time)
+    if normalized_title:
+        return ("title", normalized_title)
+    if normalized_source_name and include_time and normalized_time:
+        return ("source-time", normalized_source_name, normalized_time)
+    if normalized_source_name:
+        return ("source", normalized_source_name)
+    if normalized_time:
+        return ("time", normalized_time)
+    return tuple()
+
+
+def normalize_supporting_source_item(item: Any) -> dict[str, str] | None:
+    if isinstance(item, str):
+        stripped = item.strip()
+        if not stripped or stripped in {"[]", "{}", "null", "None"}:
+            return None
+        return {
+            "display_title": stripped,
+            "source_name": "",
+            "source_url": "",
+            "time_text": "",
+        }
+
+    if not isinstance(item, dict):
+        stripped = text_or_empty(item)
+        if not stripped:
+            return None
+        return {
+            "display_title": stripped,
+            "source_name": "",
+            "source_url": "",
+            "time_text": "",
+        }
+
+    title = (
+        text_or_empty(item.get("display_title"))
+        or text_or_empty(item.get("title"))
+        or text_or_empty(item.get("source_title"))
+        or text_or_empty(item.get("label"))
+        or text_or_empty(item.get("name"))
+        or text_or_empty(item.get("source_name"))
+    )
+    source_name = text_or_empty(item.get("source_name")) or text_or_empty(item.get("name"))
+    source_url = text_or_empty(item.get("source_url")) or text_or_empty(item.get("url"))
+    time_text = text_or_empty(item.get("time_text")) or text_or_empty(item.get("time"))
+
+    if not any([title, source_name, source_url, time_text]):
+        return None
+
+    return {
+        "display_title": title or source_name or "未命名来源",
+        "source_name": source_name,
+        "source_url": source_url,
+        "time_text": time_text,
+    }
+
+
+def normalize_card_evidence(card: dict[str, Any]) -> dict[str, Any]:
+    card["title"] = text_or_empty(card.get("title"))
+    card["source"] = text_or_empty(card.get("source"))
+    card["source_url"] = text_or_empty(card.get("source_url"))
+    card["source_title"] = text_or_empty(card.get("source_title")) or card["title"]
+
+    raw_items = parse_supporting_source_items(card.get("supporting_sources"))
+    raw_source_count = len(raw_items)
+    primary_stub = {
+        "display_title": card["source_title"],
+        "source_name": card["source"],
+        "source_url": card["source_url"],
+        "time_text": "",
+    }
+    primary_key = build_supporting_source_key(primary_stub, include_time=False)
+
+    normalized_sources: list[dict[str, str]] = []
+    seen_keys: set[tuple[str, ...]] = set()
+    for raw_item in raw_items:
+        normalized = normalize_supporting_source_item(raw_item)
+        if not normalized:
+            continue
+        if build_supporting_source_key(normalized, include_time=False) == primary_key:
+            continue
+        dedupe_key = build_supporting_source_key(normalized)
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        normalized_sources.append(normalized)
+
+    card["supporting_sources"] = normalized_sources
+    card["supporting_source_count"] = len(normalized_sources)
+    card["evidence_counts"] = {
+        "primary_sources": 1 if any(primary_key) else 0,
+        "supporting_sources": len(normalized_sources),
+        "raw_references": raw_source_count,
+    }
+    return card
+
+
+def normalize_render_payload(render_payload: dict[str, Any]) -> dict[str, Any]:
+    groups = render_payload.get("groups", [])
+    for group in groups:
+        for block in group.get("blocks", []):
+            if block.get("type") == "card" and block.get("card"):
+                block["card"] = normalize_card_evidence(block["card"])
+            elif block.get("type") == "table" and block.get("cards"):
+                block["cards"] = [normalize_card_evidence(card) for card in block.get("cards", [])]
+    return render_payload
+
+
 def build_section_render_payload(section_key: str, section_title: str, blocks: list[dict], status: str) -> dict[str, Any]:
     template_name = choose_section_template(section_key)
     groups = group_blocks(section_key, blocks, status)
+    payload = normalize_render_payload({"groups": groups})
+    groups = payload["groups"]
     outline = [group["title"] for group in groups if group.get("title")]
     card_count = len(extract_cards_from_render_payload({"groups": groups}))
     table_count = sum(
@@ -360,25 +521,27 @@ def build_card(
     style: str = "intelligence",
     source_url: str | None = None,
     source_title: str | None = None,
-    supporting_sources: list[dict[str, Any]] | None = None,
+    supporting_sources: Any = None,
     first_seen: str | None = None,
     last_seen: str | None = None,
     confidence_level: str | None = None,
     needs_review: bool = False,
     compare_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
-        "title": title.strip(),
+    clean_title = text_or_empty(title)
+    clean_core_content = text_or_empty(core_content)
+    card = {
+        "title": clean_title,
         "time": time,
         "source": source,
         "source_url": source_url,
-        "source_title": source_title or title.strip(),
-        "supporting_sources": supporting_sources or [],
+        "source_title": source_title or clean_title,
+        "supporting_sources": supporting_sources,
         "first_seen": first_seen,
         "last_seen": last_seen,
         "confidence_level": confidence_level,
         "needs_review": needs_review,
-        "core_content": core_content.strip(),
+        "core_content": clean_core_content,
         "why": why.strip() if why else "",
         "tags": tags or [],
         "style": style,
@@ -386,6 +549,7 @@ def build_card(
         "status_class": STATUS_CLASS_MAP.get(status, ""),
         "compare_meta": compare_meta or {},
     }
+    return normalize_card_evidence(card)
 
 
 def format_inline(text: str) -> str:
@@ -451,15 +615,20 @@ def extract_cards_from_render_payload(render_payload: dict[str, Any]) -> list[di
         group_title = group.get("title") or ""
         for block in group.get("blocks", []):
             if block.get("type") == "card":
-                card = block["card"]
+                card = normalize_card_evidence(block["card"])
+                block["card"] = card
                 card.setdefault("group_title", group_title)
                 card.setdefault("compare_meta", {})
                 card["compare_meta"].setdefault("group_title", group_title)
                 cards.append(card)
             elif block.get("type") == "table":
+                normalized_cards = []
                 for card in block.get("cards", []):
+                    card = normalize_card_evidence(card)
                     card.setdefault("group_title", group_title)
                     card.setdefault("compare_meta", {})
                     card["compare_meta"].setdefault("group_title", group_title)
                     cards.append(card)
+                    normalized_cards.append(card)
+                block["cards"] = normalized_cards
     return cards

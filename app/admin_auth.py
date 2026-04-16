@@ -7,8 +7,10 @@ import time
 from functools import wraps
 
 from flask import current_app, flash, redirect, request, session, url_for
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from .db import get_connection
+from .security import get_recent_audit_logs, rotate_csrf_token
 from .utils import now_string
 
 
@@ -16,7 +18,7 @@ ACCESS_SESSION_KEY = "access_session"
 ROLE_RANK = {"viewer": 1, "admin": 2}
 
 
-def _hash_secret(secret: str) -> str:
+def _fingerprint_secret(secret: str) -> str:
     payload = f"{current_app.config.get('SECRET_KEY', '')}:{secret or ''}".encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
@@ -32,6 +34,12 @@ def _required_rank(role: str) -> int:
     return ROLE_RANK.get(role, 1)
 
 
+def _session_ttl(role: str) -> int:
+    if role == "admin":
+        return int(current_app.config.get("ADMIN_SESSION_SECONDS", 3600))
+    return int(current_app.config.get("ACCESS_SESSION_SECONDS", 3600))
+
+
 def access_control_enabled() -> bool:
     return bool(current_app.config.get("ACCESS_CONTROL_ENABLED", True))
 
@@ -42,9 +50,11 @@ def current_access_session() -> dict:
     if not verified_at:
         return {}
 
-    max_age = int(current_app.config.get("ACCESS_SESSION_SECONDS", 3600))
     now = int(time.time())
-    if now - verified_at > max_age:
+    expires_at = int(payload.get("expires_at", 0) or 0)
+    if not expires_at:
+        expires_at = verified_at + _session_ttl(payload.get("role", "viewer"))
+    if now > expires_at:
         clear_access_session()
         return {}
     return payload
@@ -68,22 +78,26 @@ def current_access_role() -> str:
 
 
 def current_access_label() -> str:
-    return current_access_session().get("label", "未登录")
+    return current_access_session().get("label", "未验证")
 
 
 def mark_access_verified(identity_id: int | None, label: str, role: str, method: str) -> None:
+    verified_at = int(time.time())
     session.permanent = False
     session[ACCESS_SESSION_KEY] = {
         "identity_id": identity_id,
         "label": label,
         "role": role,
         "method": method,
-        "verified_at": int(time.time()),
+        "verified_at": verified_at,
+        "expires_at": verified_at + _session_ttl(role),
     }
+    rotate_csrf_token()
 
 
 def clear_access_session() -> None:
     session.pop(ACCESS_SESSION_KEY, None)
+    rotate_csrf_token()
 
 
 def ensure_bootstrap_access_codes() -> None:
@@ -93,24 +107,38 @@ def ensure_bootstrap_access_codes() -> None:
             return
         now = now_string()
         seed_rows = [
-            ("默认管理员码", current_app.config.get("INITIAL_ADMIN_ACCESS_CODE", "admin-123456"), "admin", "首次启动自动生成"),
-            ("默认查看码", current_app.config.get("INITIAL_VIEWER_ACCESS_CODE", "viewer-123456"), "viewer", "首次启动自动生成"),
+            ("默认管理员访问码", current_app.config.get("INITIAL_ADMIN_ACCESS_CODE", "admin-123456"), "admin", "首次启动自动生成"),
+            ("默认查看访问码", current_app.config.get("INITIAL_VIEWER_ACCESS_CODE", "viewer-123456"), "viewer", "首次启动自动生成"),
         ]
         for label, raw_code, role, notes in seed_rows:
             connection.execute(
                 """
                 INSERT INTO access_identities (
-                    label, code_hash, code_hint, role, status, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
+                    label, code_hash, secret_hash, code_hint, role, status, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
                 """,
-                (label, _hash_secret(raw_code), _code_hint(raw_code), role, notes, now, now),
+                (
+                    label,
+                    _fingerprint_secret(raw_code),
+                    generate_password_hash(raw_code),
+                    _code_hint(raw_code),
+                    role,
+                    notes,
+                    now,
+                    now,
+                ),
             )
         connection.commit()
 
 
 def verify_admin_password(password: str) -> bool:
+    configured_hash = str(current_app.config.get("ADMIN_PASSWORD_HASH", "") or "").strip()
     configured = str(current_app.config.get("ADMIN_PASSWORD", "123456"))
-    if hmac.compare_digest(password or "", configured):
+    if configured_hash:
+        if check_password_hash(configured_hash, password or ""):
+            mark_access_verified(identity_id=None, label="Bootstrap 管理员", role="admin", method="password")
+            return True
+    elif hmac.compare_digest(password or "", configured):
         mark_access_verified(identity_id=None, label="Bootstrap 管理员", role="admin", method="password")
         return True
     return False
@@ -120,7 +148,7 @@ def verify_access_secret(secret: str, required_role: str = "viewer") -> tuple[bo
     if verify_admin_password(secret):
         return True, "bootstrap-admin"
 
-    code_hash = _hash_secret(secret)
+    fingerprint = _fingerprint_secret(secret)
     with get_connection(current_app.config["DATABASE_PATH"]) as connection:
         row = connection.execute(
             """
@@ -130,16 +158,30 @@ def verify_access_secret(secret: str, required_role: str = "viewer") -> tuple[bo
               AND status = 'active'
             LIMIT 1
             """,
-            (code_hash,),
+            (fingerprint,),
         ).fetchone()
         if not row:
             return False, "not-found"
         if _required_rank(row["role"]) < _required_rank(required_role):
             return False, "role-denied"
+
+        secret_hash = row["secret_hash"] or ""
+        if secret_hash:
+            if not check_password_hash(secret_hash, secret or ""):
+                return False, "not-found"
+        elif not hmac.compare_digest(row["code_hash"], fingerprint):
+            return False, "not-found"
+
         mark_access_verified(identity_id=row["id"], label=row["label"], role=row["role"], method="access-code")
         connection.execute(
-            "UPDATE access_identities SET last_used_at = ?, updated_at = ? WHERE id = ?",
-            (now_string(), now_string(), row["id"]),
+            """
+            UPDATE access_identities
+            SET secret_hash = COALESCE(secret_hash, ?),
+                last_used_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (generate_password_hash(secret or ""), now_string(), now_string(), row["id"]),
         )
         connection.commit()
     return True, "access-code"
@@ -228,7 +270,7 @@ def get_access_management_view() -> dict:
                 "can_delete": row["status"] != "deleted",
             }
         )
-    return {"items": items, "summary": summary}
+    return {"items": items, "summary": summary, "recent_logs": get_recent_audit_logs(limit=18)}
 
 
 def create_access_identity(label: str, raw_code: str, role: str, notes: str = "") -> dict:
@@ -241,22 +283,31 @@ def create_access_identity(label: str, raw_code: str, role: str, notes: str = ""
     if len(raw_code) < 6:
         raise ValueError("访问码至少需要 6 位，便于区分与管理。")
 
-    code_hash = _hash_secret(raw_code)
+    fingerprint = _fingerprint_secret(raw_code)
     now = now_string()
     with get_connection(current_app.config["DATABASE_PATH"]) as connection:
         exists = connection.execute(
             "SELECT id FROM access_identities WHERE code_hash = ? AND status != 'deleted'",
-            (code_hash,),
+            (fingerprint,),
         ).fetchone()
         if exists:
             raise ValueError("这串访问码已经存在，请换一串新的。")
         identity_id = connection.execute(
             """
             INSERT INTO access_identities (
-                label, code_hash, code_hint, role, status, notes, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
+                label, code_hash, secret_hash, code_hint, role, status, notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
             """,
-            (label, code_hash, _code_hint(raw_code), role, notes, now, now),
+            (
+                label,
+                fingerprint,
+                generate_password_hash(raw_code),
+                _code_hint(raw_code),
+                role,
+                notes,
+                now,
+                now,
+            ),
         ).lastrowid
         connection.commit()
     return {"id": identity_id, "label": label, "role": role, "code_hint": _code_hint(raw_code)}

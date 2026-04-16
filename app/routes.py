@@ -1,3 +1,5 @@
+import math
+
 from flask import Blueprint, abort, current_app, flash, redirect, render_template, request, send_file, url_for
 
 from .admin_auth import (
@@ -9,6 +11,7 @@ from .admin_auth import (
     create_access_identity,
     current_access_label,
     current_access_role,
+    current_access_session,
     generate_access_code,
     get_access_management_view,
     is_access_verified,
@@ -17,6 +20,16 @@ from .admin_auth import (
     verify_access_secret,
 )
 from .constants import SECTION_DEFINITIONS
+from .security import (
+    clear_auth_failures,
+    csrf_input,
+    get_auth_lock_state,
+    get_csrf_token,
+    get_request_csrf_token,
+    log_audit_event,
+    register_auth_failure,
+    validate_csrf_token,
+)
 from .services import (
     activate_document,
     create_day_pdf_export,
@@ -43,6 +56,27 @@ from .utils import today_string
 bp = Blueprint("main", __name__)
 
 
+def _csrf_redirect_target(endpoint: str) -> str:
+    mapping = {
+        "main.access_login": url_for("main.access_login"),
+        "main.admin_verify": url_for("main.admin_verify"),
+        "main.access_manage": url_for("main.access_manage"),
+        "main.access_manage_action": url_for("main.access_manage"),
+        "main.upload": url_for("main.upload"),
+        "main.access_logout": url_for("main.index"),
+    }
+    return mapping.get(endpoint, build_safe_next(request.referrer, url_for("main.index")))
+
+
+def _lock_message(scope: str, state: dict) -> dict:
+    minutes = max(1, math.ceil((state.get("remaining_seconds") or 0) / 60))
+    title = "访问验证已临时锁定" if scope == "access_login" else "管理验证已临时锁定"
+    return {
+        "title": title,
+        "body": f"当前设备连续失败次数过多，请在 {minutes} 分钟后重试。",
+    }
+
+
 @bp.context_processor
 def inject_globals():
     return {
@@ -52,9 +86,31 @@ def inject_globals():
         "access_verified": is_access_verified(),
         "access_role": current_access_role(),
         "access_label": current_access_label(),
+        "access_session": current_access_session(),
         "admin_verified": is_admin_verified(),
         "max_upload_size_mb": current_app.config["MAX_CONTENT_LENGTH_MB"],
+        "csrf_token": get_csrf_token,
+        "csrf_input": csrf_input,
     }
+
+
+@bp.before_app_request
+def enforce_csrf():
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return None
+    endpoint = request.endpoint or ""
+    if endpoint.startswith("static"):
+        return None
+    if validate_csrf_token(get_request_csrf_token()):
+        return None
+    flash(
+        {
+            "title": "请求已失效",
+            "body": "表单安全令牌已失效或缺失，请刷新页面后重新提交。",
+        },
+        "error",
+    )
+    return redirect(_csrf_redirect_target(endpoint))
 
 
 @bp.before_app_request
@@ -92,11 +148,23 @@ def handle_file_too_large(_error):
 def access_login():
     next_url = build_safe_next(request.values.get("next"), url_for("main.index"))
     if request.method == "POST":
+        lock_state = get_auth_lock_state("access_login")
+        if lock_state["locked"]:
+            flash(_lock_message("access_login", lock_state), "error")
+            return redirect(url_for("main.access_login", next=next_url))
+
         secret = request.form.get("access_secret", "")
         verified, reason = verify_access_secret(secret, required_role="viewer")
         if verified:
+            clear_auth_failures("access_login")
             flash({"title": "访问验证通过", "body": "当前浏览器会话已通过访问验证，可以继续浏览系统。"}, "success")
             return redirect(next_url)
+
+        state = register_auth_failure("access_login")
+        if state["locked"]:
+            flash(_lock_message("access_login", state), "error")
+            return redirect(url_for("main.access_login", next=next_url))
+
         body = "访问码不正确，或该访问资格已停用。"
         if reason == "role-denied":
             body = "这串访问码存在，但权限不足，不能进入当前页面。"
@@ -109,11 +177,23 @@ def access_login():
 def admin_verify():
     next_url = build_safe_next(request.values.get("next"), url_for("main.upload"))
     if request.method == "POST":
+        lock_state = get_auth_lock_state("admin_verify")
+        if lock_state["locked"]:
+            flash(_lock_message("admin_verify", lock_state), "error")
+            return redirect(url_for("main.admin_verify", next=next_url))
+
         secret = request.form.get("access_secret", "")
         verified, reason = verify_access_secret(secret, required_role="admin")
         if verified:
+            clear_auth_failures("admin_verify")
             flash({"title": "管理权限已解锁", "body": "当前浏览器会话已具备管理员权限。"}, "success")
             return redirect(next_url)
+
+        state = register_auth_failure("admin_verify")
+        if state["locked"]:
+            flash(_lock_message("admin_verify", state), "error")
+            return redirect(url_for("main.admin_verify", next=next_url))
+
         body = "管理员访问码或 bootstrap 管理密码不正确。"
         if reason == "role-denied":
             body = "这串访问码只能浏览，不能执行管理操作。"
@@ -124,6 +204,12 @@ def admin_verify():
 
 @bp.route("/access/logout", methods=["POST"])
 def access_logout():
+    log_audit_event(
+        action="access.logout",
+        target_type="session",
+        target_label="current-session",
+        actor=current_access_session(),
+    )
     clear_access_session()
     flash({"title": "已退出访问会话", "body": "当前浏览器需要重新输入访问码或管理员口令后才能继续进入系统。"}, "success")
     return redirect(url_for("main.access_login"))
@@ -143,6 +229,14 @@ def access_manage():
             generated_code = raw_code
         try:
             result = create_access_identity(label, raw_code, role, notes)
+            log_audit_event(
+                action="access_identity.create",
+                target_type="access_identity",
+                target_id=result["id"],
+                target_label=result["label"],
+                detail={"role": result["role"], "generated_code": bool(generated_code)},
+                actor=current_access_session(),
+            )
             flash(
                 {
                     "title": "访问资格已创建",
@@ -172,6 +266,14 @@ def access_manage_action(identity_id: int, action: str):
         abort(404)
     try:
         result = update_access_identity_status(identity_id, target_status)
+        log_audit_event(
+            action=f"access_identity.{action}",
+            target_type="access_identity",
+            target_id=result["id"],
+            target_label=result["label"],
+            detail={"status": result["status"]},
+            actor=current_access_session(),
+        )
         flash({"title": "访问资格已更新", "body": f"{result['label']} 当前状态已切换为 {result['status']}。"}, "success")
     except ValueError as error:
         flash({"title": "操作失败", "body": str(error)}, "error")
@@ -218,7 +320,6 @@ def export_day_pdf(report_date: str):
         {
             "title": "PDF 导出成功",
             "body": f"已生成 {result['filename']}",
-            "saved_path": result["saved_path"],
             "download_url": url_for("main.download_day_pdf", report_date=report_date),
         },
         "success",
@@ -260,6 +361,15 @@ def upload():
             flash({"title": "尚未选择文件", "body": "请选择至少一个文件后再上传。"}, "error")
         else:
             results = process_uploaded_files(files)
+            success_count = len([item for item in results if item.success])
+            if success_count:
+                log_audit_event(
+                    action="document.upload",
+                    target_type="upload_batch",
+                    target_label=f"{success_count}-success",
+                    detail={"success_count": success_count, "file_count": len(results)},
+                    actor=current_access_session(),
+                )
 
     layout = get_layout_context()
     return render_template(
@@ -319,6 +429,14 @@ def library_document_withdraw(document_id: int):
     next_url = sanitize_absolute_next(request.form.get("next"))
     try:
         result = withdraw_document(document_id)
+        log_audit_event(
+            action="document.withdraw",
+            target_type="document",
+            target_id=document_id,
+            target_label=result["name"],
+            detail={"report_date": result["report_date"], "doc_type": result["doc_type"]},
+            actor=current_access_session(),
+        )
         flash(
             {
                 "title": "文件已撤回",
@@ -337,6 +455,14 @@ def library_document_activate(document_id: int):
     next_url = sanitize_absolute_next(request.form.get("next"))
     try:
         result = activate_document(document_id)
+        log_audit_event(
+            action="document.activate",
+            target_type="document",
+            target_id=document_id,
+            target_label=result["name"],
+            detail={"report_date": result["report_date"], "doc_type": result["doc_type"]},
+            actor=current_access_session(),
+        )
         flash(
             {
                 "title": "文件已设为当前生效版本",
@@ -355,6 +481,14 @@ def library_document_delete(document_id: int):
     next_url = sanitize_absolute_next(request.form.get("next"))
     try:
         result = delete_document(document_id)
+        log_audit_event(
+            action="document.delete",
+            target_type="document",
+            target_id=document_id,
+            target_label=result["name"],
+            detail={"report_date": result["report_date"], "doc_type": result["doc_type"]},
+            actor=current_access_session(),
+        )
         flash(
             {
                 "title": "文件已删除",
@@ -373,6 +507,14 @@ def library_export_delete(export_id: int):
     next_url = sanitize_absolute_next(request.form.get("next"))
     try:
         result = delete_export_file(export_id)
+        log_audit_event(
+            action="export.delete",
+            target_type="export",
+            target_id=export_id,
+            target_label=result["name"],
+            detail={"report_date": result["report_date"]},
+            actor=current_access_session(),
+        )
         flash({"title": "导出文件已删除", "body": f"{result['name']} 已从文件库移除。"}, "success")
     except ValueError as error:
         flash({"title": "删除失败", "body": str(error)}, "error")
@@ -417,7 +559,7 @@ def section_detail(report_date: str, section_key: str):
 
 
 @bp.route("/debug/sections/<report_date>")
-@access_required
+@admin_required
 def debug_sections(report_date: str):
     debug_view = get_section_debug_view(report_date)
     if not debug_view:

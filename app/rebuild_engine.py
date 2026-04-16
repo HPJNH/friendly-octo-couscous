@@ -889,7 +889,10 @@ def build_repaired_section_views(connection: sqlite3.Connection, report_date: st
 
     by_module: defaultdict[str, list[dict]] = defaultdict(list)
     for row in rows:
-        by_module[row["module_key"]].append(dict(row))
+        row_map = dict(row)
+        row_map["supporting_sources_json"] = load_json(row_map.get("supporting_sources_json"), [])
+        row_map["evidence_json"] = load_json(row_map.get("evidence_json"), {})
+        by_module[row["module_key"]].append(row_map)
 
     return {
         definition["key"]: build_repaired_section_rollup(definition, by_module.get(definition["key"], []), report_date, latest_draft)

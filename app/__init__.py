@@ -59,15 +59,22 @@ def create_app() -> Flask:
     max_content_length_mb = get_int_setting("MAX_CONTENT_LENGTH_MB", settings, 50)
     admin_session_minutes = get_int_setting("ADMIN_SESSION_MINUTES", settings, 60)
     access_session_minutes = get_int_setting("ACCESS_SESSION_MINUTES", settings, 720)
+    auth_max_failures = get_int_setting("AUTH_MAX_FAILURES", settings, 5)
+    auth_window_minutes = get_int_setting("AUTH_WINDOW_MINUTES", settings, 30)
+    auth_lock_minutes = get_int_setting("AUTH_LOCK_MINUTES", settings, 15)
 
     app = Flask(__name__, instance_relative_config=False)
     app.config.update(
         PROJECT_NAME="沉香行业情报浏览系统_1.0",
         SECRET_KEY=get_setting("SECRET_KEY", settings, "agarwood-intelligence-local-browser"),
         ADMIN_PASSWORD=get_setting("ADMIN_PASSWORD", settings, "123456"),
+        ADMIN_PASSWORD_HASH=get_setting("ADMIN_PASSWORD_HASH", settings, ""),
         ACCESS_CONTROL_ENABLED=get_bool_setting("ACCESS_CONTROL_ENABLED", settings, True),
         ADMIN_SESSION_SECONDS=admin_session_minutes * 60,
         ACCESS_SESSION_SECONDS=access_session_minutes * 60,
+        AUTH_MAX_FAILURES=auth_max_failures,
+        AUTH_WINDOW_MINUTES=auth_window_minutes,
+        AUTH_LOCK_MINUTES=auth_lock_minutes,
         INITIAL_ADMIN_ACCESS_CODE=get_setting("INITIAL_ADMIN_ACCESS_CODE", settings, "admin-123456"),
         INITIAL_VIEWER_ACCESS_CODE=get_setting("INITIAL_VIEWER_ACCESS_CODE", settings, "viewer-123456"),
         BASE_DIR=base_dir,
@@ -133,8 +140,10 @@ def create_app() -> Flask:
         SUPPORTED_EXTENSIONS=SUPPORTED_EXTENSIONS,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
-        SESSION_COOKIE_SECURE=False,
+        SESSION_COOKIE_SECURE=get_bool_setting("SESSION_COOKIE_SECURE", settings, False),
+        SESSION_REFRESH_EACH_REQUEST=False,
         PERMANENT_SESSION_LIFETIME=timedelta(minutes=access_session_minutes),
+        HIDE_INTERNAL_PATHS=get_bool_setting("HIDE_INTERNAL_PATHS", settings, True),
     )
 
     for path_key in (

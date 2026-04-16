@@ -38,6 +38,7 @@
     {% if access_role == 'admin' %}
         {% if item.can_withdraw %}
             <form method="post" action="{{ url_for('main.library_document_withdraw', document_id=item.id) }}">
+                {{ csrf_input() }}
                 <input type="hidden" name="next" value="{{ request.path }}">
                 <button
                     type="submit"
@@ -48,6 +49,7 @@
         {% endif %}
         {% if item.can_activate %}
             <form method="post" action="{{ url_for('main.library_document_activate', document_id=item.id) }}">
+                {{ csrf_input() }}
                 <input type="hidden" name="next" value="{{ request.path }}">
                 <button
                     type="submit"
@@ -58,6 +60,7 @@
         {% endif %}
         {% if item.can_delete %}
             <form method="post" action="{% if item.kind == 'document' %}{{ url_for('main.library_document_delete', document_id=item.id) }}{% else %}{{ url_for('main.library_export_delete', export_id=item.id) }}{% endif %}">
+                {{ csrf_input() }}
                 <input type="hidden" name="next" value="{{ request.path }}">
                 <button
                     type="submit"

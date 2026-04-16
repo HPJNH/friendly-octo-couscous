@@ -2,24 +2,36 @@
 
 {% block content %}
 <section class="page-card auth-stage">
-    <div class="section-header">
-        <div>
-            <p class="section-kicker">管理权限验证</p>
-            <h3>解锁上传、撤回、激活和权限管理</h3>
-            <p class="section-description">请输入管理员访问码，或使用 bootstrap 管理密码完成一次性提权。</p>
-        </div>
-    </div>
+    <div class="auth-stage-grid">
+        <div class="auth-stage-main">
+            <div class="section-header">
+                <div>
+                    <p class="section-kicker">管理权限验证</p>
+                    <h3>解锁上传、撤回、激活和权限管理</h3>
+                    <p class="section-description">请输入管理员访问码，或使用 bootstrap 管理密码完成一次性提权。</p>
+                </div>
+            </div>
 
-    <form class="auth-form" method="post">
-        <input type="hidden" name="next" value="{{ next_url }}">
-        <label class="form-field">
-            <span>管理员访问码 / 管理密码</span>
-            <input type="password" name="access_secret" placeholder="请输入管理员访问码或密码" required>
-        </label>
-        <div class="form-actions">
-            <button type="submit" class="primary-button">验证并继续</button>
-            <a class="ghost-button" href="{{ url_for('main.index') }}">返回首页</a>
+            <form class="auth-form" method="post">
+                {{ csrf_input() }}
+                <input type="hidden" name="next" value="{{ next_url }}">
+                <label class="form-field">
+                    <span>管理员访问码 / 管理密码</span>
+                    <input type="password" name="access_secret" placeholder="请输入管理员访问码或密码" required>
+                </label>
+                <div class="form-actions">
+                    <button type="submit" class="primary-button">验证并继续</button>
+                    <a class="ghost-button" href="{{ url_for('main.index') }}">返回首页</a>
+                </div>
+            </form>
         </div>
-    </form>
+
+        <aside class="auth-side-panel">
+            <span class="meta-label">管理提醒</span>
+            <strong>当前页面会影响文件状态与访问资格</strong>
+            <p>提权后可以上传文件、撤回错误版本、切换当前生效底稿，以及管理访问资格。</p>
+            <p>为避免误操作，敏感动作会额外要求 CSRF 校验与二次确认。</p>
+        </aside>
+    </div>
 </section>
 {% endblock %}

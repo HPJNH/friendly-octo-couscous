@@ -4,7 +4,7 @@
 <details class="evidence-drawer evidence-sheet">
     <summary>
         <span>查看来源与证据链</span>
-        <span class="meta-chip soft">主来源{% if card.supporting_sources %} + {{ card.supporting_sources|length }} 支撑{% endif %}</span>
+        <span class="meta-chip soft">主来源{% if card.supporting_source_count %} + {{ card.supporting_source_count }} 支撑{% endif %}</span>
     </summary>
     <div class="evidence-grid">
         <div class="drawer-item">
@@ -35,8 +35,8 @@
                 <div class="supporting-source-list">
                     {% for source in card.supporting_sources %}
                         <article class="supporting-source">
-                            <strong>{{ source.title }}</strong>
-                            <p>{{ source.source_name }}{% if source.time_text %} / {{ source.time_text }}{% endif %}</p>
+                            <strong>{{ source.display_title }}</strong>
+                            <p>{{ source.source_name or '未标注来源名称' }}{% if source.time_text %} / {{ source.time_text }}{% endif %}</p>
                             {% if source.source_url %}
                                 <p><a href="{{ source.source_url }}" target="_blank" rel="noopener noreferrer">打开支撑来源</a></p>
                             {% endif %}
@@ -243,12 +243,16 @@
 </section>
 
 <details class="meta-drawer">
-    <summary>查看原始信息</summary>
+    <summary>查看来源版本信息</summary>
     <div class="drawer-grid">
         <div class="drawer-item">
             <span class="meta-label">当前生效文件</span>
             <strong>{{ detail.current_file_name }}</strong>
-            <p>{{ detail.current_file_path }}</p>
+            {% if admin_verified %}
+                <p>{{ detail.current_file_path }}</p>
+            {% else %}
+                <p>内部路径仅管理员可见。</p>
+            {% endif %}
         </div>
         <div class="drawer-item">
             <span class="meta-label">累计内容来源</span>
@@ -258,6 +262,7 @@
         <div class="drawer-item">
             <span class="meta-label">文件库入口</span>
             <strong><a href="{{ url_for('main.library_document_detail', document_id=detail.current_file_id) }}">查看该文件详情</a></strong>
+            <p>可在文件详情页继续查看版本状态、同日版本与管理员可见的内部归档信息。</p>
         </div>
     </div>
 </details>

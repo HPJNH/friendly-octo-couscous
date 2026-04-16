@@ -22,6 +22,7 @@
     </div>
 
     <form class="upload-form" method="post" enctype="multipart/form-data">
+        {{ csrf_input() }}
         <label class="dropzone" for="files">
             <input id="files" type="file" name="files" multiple accept=".docx,.md,.txt,.pdf">
             <span class="dropzone-title">拖拽文件到这里，或点击选择文件</span>
@@ -61,7 +62,7 @@
                     <span>是否覆盖旧版本：{{ '是' if result.updated_current_version else '否' }}</span>
                 </div>
                 {% if result.validation_errors %}
-                    <div class="reading-note">
+                    <div class="reading-note upload-feedback-block">
                         <strong>结构验证失败项</strong>
                         <ul>
                             {% for item in result.validation_errors %}
@@ -71,7 +72,7 @@
                     </div>
                 {% endif %}
                 {% if result.validation_warnings %}
-                    <div class="reading-note">
+                    <div class="reading-note upload-feedback-block">
                         <strong>验证提醒</strong>
                         <ul>
                             {% for item in result.validation_warnings %}
@@ -81,7 +82,7 @@
                     </div>
                 {% endif %}
                 {% if result.parse_report_lines %}
-                    <div class="reading-note">
+                    <div class="reading-note upload-feedback-block">
                         <strong>解析报告</strong>
                         <ul>
                             {% for item in result.parse_report_lines %}

@@ -2,23 +2,35 @@
 
 {% block content %}
 <section class="page-card auth-stage">
-    <div class="section-header">
-        <div>
-            <p class="section-kicker">访问验证</p>
-            <h3>请输入访问码进入系统</h3>
-            <p class="section-description">浏览权限和管理权限已分开控制。普通查看使用 viewer 访问码，管理操作需要 admin 访问码或 bootstrap 管理密码。</p>
-        </div>
-    </div>
+    <div class="auth-stage-grid">
+        <div class="auth-stage-main">
+            <div class="section-header">
+                <div>
+                    <p class="section-kicker">访问验证</p>
+                    <h3>请输入访问码进入系统</h3>
+                    <p class="section-description">浏览权限和管理权限已分开控制。普通查看使用 viewer 访问码，管理操作需要 admin 访问码或 bootstrap 管理密码。</p>
+                </div>
+            </div>
 
-    <form class="auth-form" method="post">
-        <input type="hidden" name="next" value="{{ next_url }}">
-        <label class="form-field">
-            <span>访问码</span>
-            <input type="password" name="access_secret" placeholder="请输入访问码" required>
-        </label>
-        <div class="form-actions">
-            <button type="submit" class="primary-button">进入系统</button>
+            <form class="auth-form" method="post">
+                {{ csrf_input() }}
+                <input type="hidden" name="next" value="{{ next_url }}">
+                <label class="form-field">
+                    <span>访问码</span>
+                    <input type="password" name="access_secret" placeholder="请输入访问码" required>
+                </label>
+                <div class="form-actions">
+                    <button type="submit" class="primary-button">进入系统</button>
+                </div>
+            </form>
         </div>
-    </form>
+
+        <aside class="auth-side-panel">
+            <span class="meta-label">安全说明</span>
+            <strong>浏览与管理权限已经拆分</strong>
+            <p>验证通过后只在当前会话内生效。会话到期、浏览器关闭或手动退出后，需要重新验证。</p>
+            <p>如果多次连续输错访问码，系统会临时锁定当前设备的验证入口。</p>
+        </aside>
+    </div>
 </section>
 {% endblock %}

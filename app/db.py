@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS idx_documents_report_date
     ON documents(report_date, doc_type, is_current);
 
+CREATE INDEX IF NOT EXISTS idx_documents_library_lookup
+    ON documents(doc_type, lifecycle_status, is_current, report_date, uploaded_at DESC);
+
 CREATE TABLE IF NOT EXISTS sections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id INTEGER NOT NULL,
@@ -65,6 +68,9 @@ CREATE TABLE IF NOT EXISTS export_files (
 
 CREATE INDEX IF NOT EXISTS idx_export_files_report_date
     ON export_files(report_date, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_export_files_status_lookup
+    ON export_files(status, report_date, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS rebuild_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,6 +154,42 @@ CREATE TABLE IF NOT EXISTS access_identities (
 
 CREATE INDEX IF NOT EXISTS idx_access_identities_status
     ON access_identities(status, role, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS auth_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL,
+    remote_key TEXT NOT NULL,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    first_failed_at TEXT,
+    last_failed_at TEXT,
+    locked_until TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_attempts_scope_remote
+    ON auth_attempts(scope, remote_key);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_identity_id INTEGER,
+    actor_label TEXT,
+    actor_role TEXT,
+    remote_key TEXT,
+    user_agent TEXT,
+    action TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id INTEGER,
+    target_label TEXT,
+    detail_json TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(actor_identity_id) REFERENCES access_identities(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at
+    ON audit_logs(created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor
+    ON audit_logs(actor_identity_id, created_at DESC);
 """
 
 
@@ -213,6 +255,7 @@ def init_db(database_path: Path) -> None:
         ensure_column(connection, "access_identities", "created_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(connection, "access_identities", "updated_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(connection, "access_identities", "last_used_at", "TEXT")
+        ensure_column(connection, "access_identities", "secret_hash", "TEXT")
 
 
 def ensure_column(connection: sqlite3.Connection, table_name: str, column_name: str, column_type: str) -> None:

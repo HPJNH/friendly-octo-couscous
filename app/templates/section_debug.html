@@ -6,7 +6,7 @@
         <div>
             <p class="section-kicker">解析调试页</p>
             <h3>{{ debug_view.report_date }} 一级 section 边界检查</h3>
-            <p class="hero-subtitle">这里用于核对正式板块切分是否准确，以及页面是否绑定到了正确的 section。</p>
+            <p class="hero-subtitle">这里用于核对正式板块切分是否准确，以及页面是否绑定到了正确的 section。该页面仅管理员可见，默认弱化内部路径展示，先看边界和正文预览。</p>
         </div>
         <div class="debug-hero-actions">
             <a class="ghost-button" href="{{ url_for('main.day', report_date=debug_view.report_date) }}">返回当日首页</a>
@@ -16,15 +16,29 @@
         <div class="drawer-item">
             <span class="meta-label">底稿文件</span>
             <strong>{{ debug_view.original_name }}</strong>
-            <p>{{ debug_view.stored_path }}</p>
+            <p>用于定位当前调试对象。</p>
         </div>
         <div class="drawer-item">
             <span class="meta-label">解析归档</span>
             <strong>{{ debug_view.document_title }}</strong>
-            <p>{{ debug_view.parsed_path }}</p>
+            <p>优先核对 section 边界、命中标题和正文预览，不必先看物理路径。</p>
         </div>
     </div>
 </section>
+
+<details class="meta-drawer debug-drawer">
+    <summary>查看内部文件路径</summary>
+    <div class="drawer-grid">
+        <div class="drawer-item">
+            <span class="meta-label">底稿文件路径</span>
+            <p>{{ debug_view.stored_path }}</p>
+        </div>
+        <div class="drawer-item">
+            <span class="meta-label">解析归档路径</span>
+            <p>{{ debug_view.parsed_path }}</p>
+        </div>
+    </div>
+</details>
 
 <section class="debug-list">
     {% for item in debug_view.sections %}

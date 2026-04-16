@@ -28,6 +28,7 @@
         {% if admin_verified %}
             {% if detail.kind == 'document' and detail.status != 'withdrawn' and detail.status != 'deleted' and not detail.is_current %}
                 <form method="post" action="{{ url_for('main.library_document_activate', document_id=detail.id) }}">
+                    {{ csrf_input() }}
                     <input type="hidden" name="next" value="{{ request.path }}">
                     <button
                         type="submit"
@@ -38,6 +39,7 @@
             {% endif %}
             {% if detail.kind == 'document' and detail.status == 'active' %}
                 <form method="post" action="{{ url_for('main.library_document_withdraw', document_id=detail.id) }}">
+                    {{ csrf_input() }}
                     <input type="hidden" name="next" value="{{ request.path }}">
                     <button
                         type="submit"
@@ -48,6 +50,7 @@
             {% endif %}
             {% if detail.can_delete %}
                 <form method="post" action="{% if detail.kind == 'document' %}{{ url_for('main.library_document_delete', document_id=detail.id) }}{% else %}{{ url_for('main.library_export_delete', export_id=detail.id) }}{% endif %}">
+                    {{ csrf_input() }}
                     <input type="hidden" name="next" value="{{ request.path }}">
                     <button
                         type="submit"
@@ -76,33 +79,45 @@
             <span class="meta-label">文件标题</span>
             <strong>{{ detail.title }}</strong>
         </article>
+        {% if detail.metadata.get('detected_mime') %}
+            <article class="meta-box">
+                <span class="meta-label">内容校验</span>
+                <strong>{{ detail.metadata.get('detected_mime') }}</strong>
+            </article>
+        {% endif %}
     </div>
 </section>
 
-<details class="meta-drawer">
-    <summary>查看路径与解析信息</summary>
-    <div class="drawer-grid">
-        <div class="drawer-item">
-            <span class="meta-label">原始文件位置</span>
-            <p>{{ detail.stored_path }}</p>
+{% if admin_verified %}
+    <details class="meta-drawer">
+        <summary>查看内部归档与解析信息</summary>
+        <div class="drawer-grid">
+            <div class="drawer-item">
+                <span class="meta-label">原始文件位置</span>
+                <p>{{ detail.stored_path }}</p>
+            </div>
+            {% if detail.parsed_path %}
+                <div class="drawer-item">
+                    <span class="meta-label">解析归档位置</span>
+                    <p>{{ detail.parsed_path }}</p>
+                </div>
+            {% endif %}
+            {% if detail.metadata %}
+                <div class="drawer-item">
+                    <span class="meta-label">解析版本</span>
+                    <p>{{ detail.metadata.get('parser_version', '未知') }}</p>
+                    {% if detail.metadata.get('recognition_note') %}
+                        <p>{{ detail.metadata.get('recognition_note') }}</p>
+                    {% endif %}
+                </div>
+            {% endif %}
         </div>
-        {% if detail.parsed_path %}
-            <div class="drawer-item">
-                <span class="meta-label">解析归档位置</span>
-                <p>{{ detail.parsed_path }}</p>
-            </div>
-        {% endif %}
-        {% if detail.metadata %}
-            <div class="drawer-item">
-                <span class="meta-label">解析版本</span>
-                <p>{{ detail.metadata.get('parser_version', '未知') }}</p>
-                {% if detail.metadata.get('recognition_note') %}
-                    <p>{{ detail.metadata.get('recognition_note') }}</p>
-                {% endif %}
-            </div>
-        {% endif %}
-    </div>
-</details>
+    </details>
+{% else %}
+    <section class="page-card inline-note">
+        <p>原始文件路径、解析归档路径和内部解析元信息仅管理员可见。</p>
+    </section>
+{% endif %}
 
 {% if detail.kind == 'document' %}
     <section class="page-card">
