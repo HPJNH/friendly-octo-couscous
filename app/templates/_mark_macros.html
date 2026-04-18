@@ -1,0 +1,77 @@
+{% macro entry_mark_panel(card, next_url, compact=false) -%}
+{% set summary = card.mark_summary or {} %}
+{% set viewer_mark = summary.viewer_mark %}
+{% if card.entry_id %}
+    <div class="entry-mark-shell{% if summary.has_marks %} is-marked{% endif %}{% if compact %} compact{% endif %}">
+        {% if summary.has_marks %}
+            <div class="entry-mark-banner">
+                <div class="entry-mark-banner-main">
+                    <span class="entry-mark-badge">重点</span>
+                    {% if summary.highlight_note %}
+                        <p class="entry-mark-note">{{ summary.highlight_note }}</p>
+                    {% else %}
+                        <p class="entry-mark-note">{{ summary.latest_marker_label }} 标记了这条内容</p>
+                    {% endif %}
+                </div>
+                <details class="entry-mark-popover">
+                    <summary class="entry-mark-meta-trigger">
+                        {{ summary.count }} 条标记
+                    </summary>
+                    <div class="entry-mark-popover-panel">
+                        {% for item in summary.items %}
+                            <article class="entry-mark-item">
+                                <div class="entry-mark-item-head">
+                                    <strong>{{ item.marker_label }}</strong>
+                                    <span class="meta-chip soft">{{ item.mark_type_label }}</span>
+                                </div>
+                                <p class="entry-mark-item-meta">{{ item.updated_at }}</p>
+                                {% if item.note %}
+                                    <p class="entry-mark-item-note">{{ item.note }}</p>
+                                {% endif %}
+                                {% if item.can_manage %}
+                                    <form method="post" action="{{ url_for('main.entry_mark_deactivate', mark_id=item.id) }}">
+                                        {{ csrf_input() }}
+                                        <input type="hidden" name="next" value="{{ next_url }}">
+                                        <button type="submit" class="ghost-button small" data-confirm="确认取消这条重点标记吗？">取消标记</button>
+                                    </form>
+                                {% endif %}
+                            </article>
+                        {% endfor %}
+                    </div>
+                </details>
+            </div>
+        {% endif %}
+
+        {% if summary.viewer_can_mark %}
+            <div class="entry-mark-actions">
+                <button type="button" class="ghost-button small entry-mark-trigger" data-mark-editor-toggle>
+                    {{ "修改重点摘录" if viewer_mark else "标记重点" }}
+                </button>
+            </div>
+            <div class="entry-mark-editor" hidden>
+                <form method="post" action="{{ url_for('main.entry_mark_upsert', entry_id=card.entry_id) }}">
+                    {{ csrf_input() }}
+                    <input type="hidden" name="next" value="{{ next_url }}">
+                    <input type="hidden" name="mark_type" value="focus">
+                    <label class="entry-mark-field">
+                        <span>重点摘录</span>
+                        <input
+                            type="text"
+                            name="note"
+                            maxlength="80"
+                            value="{{ viewer_mark.note if viewer_mark else '' }}"
+                            placeholder="用一句话提醒团队这条为什么重要"
+                        >
+                    </label>
+                    <div class="entry-mark-editor-actions">
+                        <button type="submit" class="primary-button small">
+                            {{ "更新重点" if viewer_mark else "保存重点" }}
+                        </button>
+                        <button type="button" class="ghost-button small" data-mark-editor-cancel>收起</button>
+                    </div>
+                </form>
+            </div>
+        {% endif %}
+    </div>
+{% endif %}
+{%- endmacro %}

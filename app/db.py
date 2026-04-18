@@ -139,6 +139,28 @@ CREATE INDEX IF NOT EXISTS idx_entries_event_key
 CREATE INDEX IF NOT EXISTS idx_entries_display_status
     ON entries(display_status, needs_review, is_deleted);
 
+CREATE TABLE IF NOT EXISTS entry_marks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id INTEGER NOT NULL,
+    marker_identity_id INTEGER NOT NULL,
+    mark_type TEXT NOT NULL DEFAULT 'focus',
+    note TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(entry_id) REFERENCES entries(id),
+    FOREIGN KEY(marker_identity_id) REFERENCES access_identities(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_entry_marks_unique_actor
+    ON entry_marks(entry_id, marker_identity_id);
+
+CREATE INDEX IF NOT EXISTS idx_entry_marks_entry_lookup
+    ON entry_marks(entry_id, is_active, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_entry_marks_actor_lookup
+    ON entry_marks(marker_identity_id, is_active, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS access_identities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     label TEXT NOT NULL,
@@ -154,6 +176,20 @@ CREATE TABLE IF NOT EXISTS access_identities (
 
 CREATE INDEX IF NOT EXISTS idx_access_identities_status
     ON access_identities(status, role, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS access_code_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    identity_id INTEGER,
+    code_hash TEXT NOT NULL UNIQUE,
+    code_hint TEXT NOT NULL,
+    is_current INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    retired_at TEXT,
+    FOREIGN KEY(identity_id) REFERENCES access_identities(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_access_code_history_identity
+    ON access_code_history(identity_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS auth_attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

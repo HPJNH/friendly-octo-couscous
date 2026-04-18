@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-card auth-stage auth-gate-stage change-code-stage">
+    <div class="auth-stage-grid auth-gate-grid">
+        <div class="auth-stage-main auth-gate-main">
+            <div class="section-header">
+                <div>
+                    <p class="section-kicker">修改我的访问码</p>
+                    <h3>更新当前账号使用的 6 位访问码</h3>
+                    <p class="section-description">这里仅修改你自己的访问码，不会看到其他用户信息。修改成功后，当前会话会继续保留，后续登录请使用新的访问码。</p>
+                </div>
+            </div>
+
+            <div class="auth-gate-intro">
+                <span class="meta-chip">当前身份 {{ current_identity.label }}</span>
+                <span class="meta-chip soft">{{ '管理员' if current_identity.role == 'admin' else '浏览用户' }}</span>
+            </div>
+
+            <form class="auth-form auth-gate-form change-code-form" method="post">
+                {{ csrf_input() }}
+                <label class="form-field">
+                    <span>当前访问码</span>
+                    <input type="password" name="current_code" inputmode="numeric" pattern="[0-9]{6}" placeholder="请输入当前 6 位访问码" required>
+                </label>
+                <label class="form-field">
+                    <span>新访问码</span>
+                    <input type="password" name="new_code" inputmode="numeric" pattern="[0-9]{6}" placeholder="请输入新的 6 位访问码" required>
+                </label>
+                <label class="form-field">
+                    <span>再次确认新访问码</span>
+                    <input type="password" name="confirm_new_code" inputmode="numeric" pattern="[0-9]{6}" placeholder="请再次输入新的 6 位访问码" required>
+                </label>
+                <div class="form-actions">
+                    <button type="submit" class="primary-button">保存新访问码</button>
+                    <a class="ghost-button" href="{{ url_for('main.index') }}">返回工作台</a>
+                </div>
+            </form>
+        </div>
+
+        <aside class="auth-side-panel auth-gate-side">
+            <span class="meta-label">修改说明</span>
+            <strong>访问码标准统一为 6 位数字</strong>
+            <p>系统会校验当前访问码是否正确、新访问码是否符合规则，以及两次输入是否一致。</p>
+            <p>为了安全起见，完整访问码不会在数据库中以明文形式保存，请妥善保管新的访问码。</p>
+            <div class="auth-gate-note-list">
+                <span class="meta-chip">当前提示 {{ current_identity.code_hint }}</span>
+                <span class="meta-chip soft">最近更新 {{ current_identity.updated_at }}</span>
+            </div>
+        </aside>
+    </div>
+</section>
+{% endblock %}

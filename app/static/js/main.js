@@ -12,12 +12,51 @@ const viewModeLabels = document.querySelectorAll("[data-view-mode-label]");
 const viewModeNotes = document.querySelectorAll("[data-view-mode-note]");
 const viewModeMenuLabels = document.querySelectorAll("[data-view-mode-menu]");
 const menuLinks = document.querySelectorAll("[data-menu-link]");
+const primaryNavLinks = document.querySelectorAll("[data-nav-group='primary']");
 const sidebarFolds = document.querySelectorAll("[data-sidebar-fold]");
 
 let lockedScrollY = 0;
 
 const resolveAutoViewMode = () => (window.innerWidth <= MOBILE_BREAKPOINT ? "mobile" : "desktop");
 const isMobileView = () => root.dataset.viewMode === "mobile";
+const getCurrentPage = () => body.dataset.currentPage || "";
+const getCurrentHash = () => (window.location.hash || "").replace(/^#/, "");
+
+const resolvePrimaryNavKey = () => {
+    const page = getCurrentPage();
+    const path = window.location.pathname || "/";
+    const hash = getCurrentHash();
+    const hashMap = {
+        "today-focus": "today_focus",
+        "today-new": "today_new",
+        "reading-category-theme_track": "theme_track",
+        "recent-versions": "recent_changes",
+    };
+
+    if (page === "history" || path.startsWith("/history")) {
+        return "history_archive";
+    }
+    if (page === "home" || path === "/" || path.startsWith("/day/")) {
+        return hashMap[hash] || "today_focus";
+    }
+    return "";
+};
+
+const syncPrimaryNavActiveState = () => {
+    if (!primaryNavLinks.length) {
+        return;
+    }
+    const activeKey = resolvePrimaryNavKey();
+    primaryNavLinks.forEach((link) => {
+        const isActive = !!activeKey && link.dataset.navKey === activeKey;
+        link.classList.toggle("active", isActive);
+        if (isActive) {
+            link.setAttribute("aria-current", "page");
+        } else {
+            link.removeAttribute("aria-current");
+        }
+    });
+};
 
 const getStoredViewPreference = () => {
     try {
@@ -132,6 +171,7 @@ const applyViewMode = (preference, persist = false) => {
 };
 
 applyViewMode(getStoredViewPreference(), false);
+syncPrimaryNavActiveState();
 
 if (menuToggle && sidebar) {
     menuToggle.addEventListener("click", () => {
@@ -161,6 +201,7 @@ if (sidebar) {
 menuLinks.forEach((link) => {
     link.addEventListener("click", () => {
         closeMobileMenu();
+        window.setTimeout(syncPrimaryNavActiveState, 0);
     });
 });
 
@@ -193,6 +234,10 @@ window.addEventListener("resize", () => {
     if (!isMobileView()) {
         closeMobileMenu();
     }
+});
+
+window.addEventListener("hashchange", () => {
+    syncPrimaryNavActiveState();
 });
 
 document.addEventListener("keydown", (event) => {

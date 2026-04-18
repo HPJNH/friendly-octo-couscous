@@ -1,36 +1,45 @@
 {% extends "base.html" %}
 
 {% block content %}
-<section class="page-card auth-stage">
-    <div class="auth-stage-grid">
-        <div class="auth-stage-main">
+<section class="page-card auth-stage auth-gate-stage admin-gate-stage">
+    <div class="auth-stage-grid auth-gate-grid">
+        <div class="auth-stage-main auth-gate-main">
             <div class="section-header">
                 <div>
-                    <p class="section-kicker">管理权限验证</p>
-                    <h3>解锁上传、撤回、激活和权限管理</h3>
-                    <p class="section-description">请输入管理员访问码，或使用 bootstrap 管理密码完成一次性提权。</p>
+                    <p class="section-kicker">管理验证</p>
+                    <h3>先解锁管理权限，再继续上传、撤回或切换版本</h3>
+                    <p class="section-description">这一步只负责确认你是否可以执行管理动作。通过后，当前会话会临时具备上传、撤回、激活和访问资格管理能力。</p>
                 </div>
             </div>
 
-            <form class="auth-form" method="post">
+            <div class="auth-gate-intro">
+                <span class="meta-chip">支持管理员访问码</span>
+                <span class="meta-chip soft">当前仅接受管理员 6 位访问码</span>
+            </div>
+
+            <form class="auth-form auth-gate-form" method="post">
                 {{ csrf_input() }}
                 <input type="hidden" name="next" value="{{ next_url }}">
                 <label class="form-field">
-                    <span>管理员访问码 / 管理密码</span>
-                    <input type="password" name="access_secret" placeholder="请输入管理员访问码或密码" required>
+                    <span>管理员访问码</span>
+                    <input type="password" name="access_secret" inputmode="numeric" pattern="[0-9]{6}" placeholder="请输入管理员 6 位访问码" required>
                 </label>
                 <div class="form-actions">
                     <button type="submit" class="primary-button">验证并继续</button>
-                    <a class="ghost-button" href="{{ url_for('main.index') }}">返回首页</a>
+                    <a class="ghost-button" href="{{ url_for('main.index') }}">返回工作台</a>
                 </div>
             </form>
         </div>
 
-        <aside class="auth-side-panel">
+        <aside class="auth-side-panel auth-gate-side">
             <span class="meta-label">管理提醒</span>
-            <strong>当前页面会影响文件状态与访问资格</strong>
-            <p>提权后可以上传文件、撤回错误版本、切换当前生效底稿，以及管理访问资格。</p>
-            <p>为避免误操作，敏感动作会额外要求 CSRF 校验与二次确认。</p>
+            <strong>提权后会影响资料状态与访问资格</strong>
+            <p>通过验证后，你可以上传新底稿、撤回错误版本、切换当前生效文件，以及管理系统访问资格。</p>
+            <p>敏感操作仍会继续受到 CSRF 校验和二次确认保护，避免误点和误操作。</p>
+            <div class="auth-gate-note-list">
+                <span class="meta-chip">上传 / 撤回 / 激活</span>
+                <span class="meta-chip soft">访问资格管理</span>
+            </div>
         </aside>
     </div>
 </section>

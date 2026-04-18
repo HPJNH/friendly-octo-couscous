@@ -1,63 +1,134 @@
 {% extends "base.html" %}
 
+{% set current_candidates = history_days | selectattr('has_draft') | list %}
+{% set current_day = current_candidates[0] if current_candidates else None %}
+{% set exportable_days = history_days | selectattr('can_export') | list | length %}
+
 {% block content %}
-<section class="page-card history-page">
-    <div class="section-header">
+<section class="hero-card history-hero-panel">
+    <div class="hero-head history-hero-head">
         <div>
             <p class="section-kicker">历史归档</p>
-            <h3>按日期回看累计有效情报</h3>
-            <p class="section-description">历史页以底稿版本、状态变化与导出入口为主。今日报告主链已退出主展示，只保留底稿驱动的累计有效视图。</p>
+            <h3>从版本轨迹回看资料如何进入当前阅读视图</h3>
+            <p class="hero-subtitle">历史页不再只是归档列表，而是把每一天的版本、变化状态和导出成果串成一条可回看的演进轨迹。</p>
+        </div>
+        <div class="hero-meta">
+            <span class="info-chip">已纳入 {{ history_days | length }} 个日期</span>
+            <span class="info-chip muted">可导出 {{ exportable_days }} 个版本</span>
+        </div>
+    </div>
+
+    <div class="overview-strip history-summary-strip">
+        <article class="overview-tile">
+            <span>当前有效版本</span>
+            <strong>{{ current_day.report_date if current_day else "暂无" }}</strong>
+        </article>
+        <article class="overview-tile">
+            <span>版本轨迹天数</span>
+            <strong>{{ history_days | length }}</strong>
+        </article>
+        <article class="overview-tile">
+            <span>可导出版本</span>
+            <strong>{{ exportable_days }}</strong>
+        </article>
+        <article class="overview-tile">
+            <span>当前主链日期</span>
+            <strong>{{ latest_date or "暂无" }}</strong>
+        </article>
+    </div>
+</section>
+
+{% if current_day %}
+<section class="hero-card history-current-hero">
+    <div class="hero-head">
+        <div>
+            <p class="section-kicker">当前主链</p>
+            <h3>{{ current_day.report_date }}</h3>
+            <p class="hero-subtitle">这是当前仍在驱动首页、阅读详情页和 PDF 导出的有效版本。</p>
+        </div>
+        <div class="history-tags">
+            <span class="status-pill tag-new">当前有效</span>
+            {% for pill in current_day.display_status_pills %}
+                <span class="status-pill {{ pill.class }}">{{ pill.label }} {{ pill.count }}</span>
+            {% endfor %}
+        </div>
+    </div>
+    <div class="detail-actions detail-actions-muted">
+        <a class="primary-button" href="{{ url_for('main.day', report_date=current_day.report_date) }}">打开当前工作台</a>
+        {% if current_day.can_export %}
+            <a class="ghost-button" href="{{ url_for('main.export_day_pdf', report_date=current_day.report_date) }}?next={{ request.path }}">导出当前 PDF</a>
+        {% endif %}
+    </div>
+</section>
+{% endif %}
+
+<section class="page-card history-trajectory-stage">
+    <div class="section-header">
+        <div>
+            <p class="section-kicker">资料演进时间线</p>
+            <h3>最近版本变化与历史延续轨迹</h3>
+            <p class="section-description">可以从任意一天进入当日页面，继续查看累计有效内容是如何演进的。</p>
         </div>
     </div>
 
     {% if history_days %}
-        <div class="archive-grid">
+        <div class="timeline-list history-trajectory-list">
             {% for day in history_days %}
-                <article class="archive-card">
-                    <div class="archive-head">
+                <article class="timeline-item history-trajectory-card{% if day.report_date == latest_date %} is-current{% endif %}">
+                    <div class="timeline-head history-trajectory-head">
                         <div>
+                            <p class="section-kicker">版本 {{ loop.index }}</p>
                             <h4>{{ day.report_date }}</h4>
-                            <p>底稿：{{ '已上传' if day.has_draft else '缺失' }}</p>
+                            <p class="timeline-note">
+                                {% if day.report_date == latest_date %}
+                                    当前有效版本链正在使用这一天的底稿。
+                                {% elif day.has_draft %}
+                                    这一天保留了可回看的底稿版本，可用于对照变化。
+                                {% else %}
+                                    当前只保留了该日期的辅助记录，暂无可用底稿主链。
+                                {% endif %}
+                            </p>
                         </div>
-                        <div class="archive-actions">
-                            <a class="primary-button small" href="{{ url_for('main.day', report_date=day.report_date) }}">打开当日页面</a>
-                            {% if day.can_export %}
-                                <a class="ghost-button small" href="{{ url_for('main.export_day_pdf', report_date=day.report_date) }}?next={{ request.path }}">导出 PDF</a>
-                            {% else %}
-                                <span class="ghost-button small disabled-link">暂不可导出</span>
+                        <div class="history-tags">
+                            {% if day.report_date == latest_date %}
+                                <span class="status-pill tag-new">当前有效</span>
                             {% endif %}
+                            <span class="status-pill {{ 'tag-retained' if day.has_draft else 'tag-empty' }}">
+                                {{ '已保留底稿' if day.has_draft else '缺少底稿' }}
+                            </span>
                         </div>
                     </div>
 
-                    <div class="history-tags">
-                        {% for label in ['新增', '更新', '背景补充', '历史保留', '占位项', '无内容'] %}
-                            {% set count = day.status_counts.get(label, 0) %}
-                            {% if count %}
-                                <span class="status-pill {{ {
-                                    '新增': 'tag-new',
-                                    '更新': 'tag-update',
-                                    '背景补充': 'tag-background',
-                                    '历史保留': 'tag-retained',
-                                    '占位项': 'tag-placeholder',
-                                    '无内容': 'tag-empty'
-                                }[label] }}">{{ label }} {{ count }}</span>
-                            {% endif %}
+                    <div class="timeline-meta-row">
+                        <span class="meta-chip">启用 {{ day.draft_versions.get('active', 0) }}</span>
+                        <span class="meta-chip soft">撤回 {{ day.draft_versions.get('withdrawn', 0) }}</span>
+                        <span class="meta-chip soft">归档 {{ day.draft_versions.get('archived', 0) }}</span>
+                        {% if day.draft_name %}
+                            <span class="meta-chip soft">当前文件 {{ day.draft_name }}</span>
+                        {% endif %}
+                    </div>
+
+                    <div class="history-tags history-tags-wrap">
+                        {% for pill in day.display_status_pills %}
+                            <span class="status-pill {{ pill.class }}">{{ pill.label }} {{ pill.count }}</span>
                         {% endfor %}
                     </div>
 
-                    <div class="file-notes">
-                        {% if day.draft_name %}
-                            <p>底稿文件：{{ day.draft_name }}</p>
+                    <div class="archive-actions timeline-actions">
+                        <a class="primary-button small" href="{{ url_for('main.day', report_date=day.report_date) }}">打开当日页面</a>
+                        {% if day.can_export %}
+                            <a class="ghost-button small" href="{{ url_for('main.export_day_pdf', report_date=day.report_date) }}?next={{ request.path }}">导出 PDF</a>
+                        {% else %}
+                            <span class="ghost-button small disabled-link">暂无可导出结果</span>
                         {% endif %}
-                        <p>底稿版本：启用 {{ day.draft_versions.get('active', 0) }} / 已撤回 {{ day.draft_versions.get('withdrawn', 0) }} / 已归档 {{ day.draft_versions.get('archived', 0) }}</p>
                     </div>
                 </article>
             {% endfor %}
         </div>
     {% else %}
         <div class="empty-panel">
-            <p>当前还没有历史归档。</p>
-            <p>上传文件后，系统会自动按日期生成可回看的历史记录。</p>
+            <p>当前还没有历史轨迹。</p>
+            <p>上传第一份研究底稿后，这里会自动形成可回看的版本时间线。</p>
         </div>
     {% endif %}
 </section>

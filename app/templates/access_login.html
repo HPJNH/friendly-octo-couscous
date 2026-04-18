@@ -1,23 +1,28 @@
 {% extends "base.html" %}
 
 {% block content %}
-<section class="page-card auth-stage">
-    <div class="auth-stage-grid">
-        <div class="auth-stage-main">
+<section class="page-card auth-stage auth-gate-stage">
+    <div class="auth-stage-grid auth-gate-grid">
+        <div class="auth-stage-main auth-gate-main">
             <div class="section-header">
                 <div>
-                    <p class="section-kicker">访问验证</p>
-                    <h3>请输入访问码进入系统</h3>
-                    <p class="section-description">浏览权限和管理权限已分开控制。普通查看使用 viewer 访问码，管理操作需要 admin 访问码或 bootstrap 管理密码。</p>
+                    <p class="section-kicker">进入系统</p>
+                    <h3>先完成访问验证，再进入情报工作台</h3>
+                    <p class="section-description">浏览权限和管理权限已经分层控制。输入你的 6 位访问码后，当前浏览器会话就能继续进入系统。</p>
                 </div>
             </div>
 
-            <form class="auth-form" method="post">
+            <div class="auth-gate-intro">
+                <span class="meta-chip">仅在当前会话内生效</span>
+                <span class="meta-chip soft">关闭浏览器或超时后需要重新验证</span>
+            </div>
+
+            <form class="auth-form auth-gate-form" method="post">
                 {{ csrf_input() }}
                 <input type="hidden" name="next" value="{{ next_url }}">
                 <label class="form-field">
                     <span>访问码</span>
-                    <input type="password" name="access_secret" placeholder="请输入访问码" required>
+                    <input type="password" name="access_secret" inputmode="numeric" pattern="[0-9]{6}" placeholder="请输入 6 位访问码" required>
                 </label>
                 <div class="form-actions">
                     <button type="submit" class="primary-button">进入系统</button>
@@ -25,11 +30,15 @@
             </form>
         </div>
 
-        <aside class="auth-side-panel">
-            <span class="meta-label">安全说明</span>
-            <strong>浏览与管理权限已经拆分</strong>
-            <p>验证通过后只在当前会话内生效。会话到期、浏览器关闭或手动退出后，需要重新验证。</p>
-            <p>如果多次连续输错访问码，系统会临时锁定当前设备的验证入口。</p>
+        <aside class="auth-side-panel auth-gate-side">
+            <span class="meta-label">访问说明</span>
+            <strong>这是进入系统的门，而不是后台登录页</strong>
+            <p>验证通过后，你会进入首页工作台，并可以继续浏览文件库、历史轨迹和板块详情页。</p>
+            <p>如果连续多次输入错误访问码，系统会暂时锁定当前设备的验证入口，避免被暴力尝试。</p>
+            <div class="auth-gate-note-list">
+                <span class="meta-chip">viewer 可浏览</span>
+                <span class="meta-chip soft">admin 可管理</span>
+            </div>
         </aside>
     </div>
 </section>

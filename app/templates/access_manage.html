@@ -1,14 +1,19 @@
 {% extends "base.html" %}
 
 {% block content %}
-<section class="page-card">
-    <div class="section-header">
+<section class="hero-card access-manage-hero">
+    <div class="hero-head">
         <div>
-            <p class="section-kicker">访问资格管理</p>
-            <h3>创建、停用和清理访问码</h3>
-            <p class="section-description">这里负责管理谁能进入系统、谁只有浏览权限、谁拥有管理权限。管理员离职后，可以直接停用或删除对应资格。</p>
+            <p class="section-kicker">内部访问管理</p>
+            <h3>管理谁可以进入系统，以及谁可以执行管理动作</h3>
+            <p class="hero-subtitle">这里负责创建、停用和清理访问资格。页面气质保持克制，但会明确区分查看权限与管理权限，避免它继续像一个普通后台列表。</p>
+        </div>
+        <div class="hero-meta">
+            <span class="info-chip">生效资格 {{ access_view.summary.get('active', 0) }}</span>
+            <span class="info-chip muted">管理员 {{ access_view.summary.get('admins', 0) }}</span>
         </div>
     </div>
+
     <div class="overview-strip library-summary">
         <article class="overview-tile">
             <span>生效资格</span>
@@ -29,16 +34,32 @@
     </div>
 </section>
 
-<section class="access-manage-layout">
-    <section class="page-card">
+{% if generated_code %}
+    <section class="page-card access-code-callout">
+        <div class="section-header">
+            <div>
+                <p class="section-kicker">本次生成结果</p>
+                <h3>请立即保存新访问码</h3>
+                <p class="section-description">系统不会再次展示完整访问码，请在发给同事前先妥善保存。</p>
+            </div>
+        </div>
+        <div class="access-code-banner">
+            <strong>{{ generated_code }}</strong>
+        </div>
+    </section>
+{% endif %}
+
+<section class="access-manage-layout access-stage-layout">
+    <section class="page-card access-form-stage">
         <div class="section-header">
             <div>
                 <p class="section-kicker">新增访问资格</p>
-                <h3>创建新的 viewer / admin 访问码</h3>
-                <p class="section-description">系统只会保存访问码的安全摘要，不会把完整访问码明文写入数据库。请在创建后立即自行保存完整访问码。</p>
+                <h3>创建新的 viewer / admin 凭证</h3>
+                <p class="section-description">创建完成后，系统只保存安全摘要，不会把完整访问码明文留在数据库里。当前访问码标准统一为 6 位数字，请把完整访问码当作一次性交付内容妥善保管。</p>
             </div>
         </div>
-        <form class="auth-form stacked" method="post">
+
+        <form class="auth-form stacked access-manage-form" method="post">
             {{ csrf_input() }}
             <label class="form-field">
                 <span>资格名称</span>
@@ -53,11 +74,11 @@
             </label>
             <label class="form-field">
                 <span>访问码</span>
-                <input type="text" name="raw_code" placeholder="可手填，也可勾选自动生成">
+                <input type="text" name="raw_code" inputmode="numeric" pattern="[0-9]{6}" placeholder="请输入 6 位数字，或勾选自动生成">
             </label>
             <label class="form-field inline-check">
                 <input type="checkbox" name="generate_code" value="yes">
-                <span>如果未手填访问码，则自动生成一串新访问码</span>
+                <span>如果未手填访问码，则自动生成一串新的 6 位数字访问码</span>
             </label>
             <label class="form-field">
                 <span>备注</span>
@@ -69,12 +90,94 @@
         </form>
     </section>
 
-    <aside class="page-card audit-stage">
+    <aside class="page-card access-side-stage">
+        <div class="section-header">
+            <div>
+                <p class="section-kicker">管理说明</p>
+                <h3>当前访问控制边界</h3>
+            </div>
+        </div>
+        <div class="access-note-stack">
+            <article class="auth-side-panel access-note-card">
+                <span class="meta-label">权限分层</span>
+                <strong>浏览与管理已拆分控制</strong>
+                <p>viewer 只能进入系统查看内容；admin 才能上传文件、切换当前生效版本、停用资格和删除文件。</p>
+            </article>
+            <article class="auth-side-panel access-note-card">
+                <span class="meta-label">凭证安全</span>
+                <strong>完整访问码不做明文保存</strong>
+                <p>系统保存的是访问码摘要与安全哈希。创建完成后，请你在发给同事之前自行保存完整访问码。</p>
+            </article>
+        </div>
+    </aside>
+</section>
+
+<section class="access-manage-layout access-audit-layout">
+    <section class="page-card access-list-stage">
+        <div class="section-header">
+            <div>
+                <p class="section-kicker">现有资格</p>
+                <h3>当前访问资格清单</h3>
+                <p class="section-description">这里展示当前系统中的访问资格。生效、停用和删除动作继续保留，但会弱于资格本身的信息层级。</p>
+            </div>
+        </div>
+        <div class="history-list access-identity-list">
+            {% for item in access_view["items"] %}
+                <article class="library-card access-identity-card">
+                    <div class="archive-head">
+                        <div>
+                            <h4>{{ item.label }}</h4>
+                            <p>{{ "管理员资格" if item.role == 'admin' else "浏览资格" }} / {{ item.code_hint }}</p>
+                        </div>
+                        <div class="history-tags">
+                            <span class="status-pill {% if item.status == 'active' %}tag-new{% elif item.status == 'disabled' %}tag-update{% else %}tag-empty{% endif %}">
+                                {{ "生效中" if item.status == 'active' else "已停用" if item.status == 'disabled' else "已删除" }}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="library-card-meta">
+                        <span class="meta-chip">创建 {{ item.created_at }}</span>
+                        <span class="meta-chip soft">最近更新 {{ item.updated_at }}</span>
+                        <span class="meta-chip soft">最近使用 {{ item.last_used_at }}</span>
+                    </div>
+                    {% if item.notes %}
+                        <p class="card-note">{{ item.notes }}</p>
+                    {% endif %}
+                    <div class="archive-actions">
+                        {% if item.can_disable %}
+                            <form method="post" action="{{ url_for('main.access_manage_action', identity_id=item.id, action='disable') }}">
+                                {{ csrf_input() }}
+                                <button type="submit" class="ghost-button small danger-button" data-confirm="确认停用这串访问码吗？">停用</button>
+                            </form>
+                        {% endif %}
+                        {% if item.can_activate %}
+                            <form method="post" action="{{ url_for('main.access_manage_action', identity_id=item.id, action='activate') }}">
+                                {{ csrf_input() }}
+                                <button type="submit" class="primary-button small" data-confirm="确认重新启用这串访问码吗？">重新启用</button>
+                            </form>
+                        {% endif %}
+                        {% if item.can_delete %}
+                            <form method="post" action="{{ url_for('main.access_manage_action', identity_id=item.id, action='delete') }}">
+                                {{ csrf_input() }}
+                                <button type="submit" class="ghost-button small danger-button" data-confirm="确认彻底删除这串访问码吗？">删除</button>
+                            </form>
+                        {% endif %}
+                    </div>
+                </article>
+            {% else %}
+                <div class="empty-panel">
+                    <p>当前还没有访问资格。</p>
+                </div>
+            {% endfor %}
+        </div>
+    </section>
+
+    <aside class="page-card audit-stage access-log-stage">
         <div class="section-header">
             <div>
                 <p class="section-kicker">操作日志</p>
                 <h3>最近管理动作</h3>
-                <p class="section-description">记录访问资格、文件状态与关键管理动作，便于后续追溯。</p>
+                <p class="section-description">日志用来追溯谁创建了资格、谁停用了文件、谁切换了当前版本，不需要大，但必须足够清楚可信。</p>
             </div>
         </div>
         <div class="audit-log-list">
@@ -86,7 +189,7 @@
                     </div>
                     <p class="audit-log-meta">
                         {{ item.actor_label }} / {{ "管理员" if item.actor_role == "admin" else "浏览" }}
-                        · {{ item.target_type_label }}{% if item.target_label %}：{{ item.target_label }}{% endif %}
+                        / {{ item.target_type_label }}{% if item.target_label %}：{{ item.target_label }}{% endif %}
                     </p>
                 </article>
             {% else %}
@@ -96,59 +199,5 @@
             {% endfor %}
         </div>
     </aside>
-</section>
-
-<section class="page-card">
-    <div class="section-header">
-        <div>
-            <p class="section-kicker">现有资格</p>
-            <h3>当前访问码列表</h3>
-        </div>
-    </div>
-    <div class="history-list">
-        {% for item in access_view["items"] %}
-            <article class="library-card">
-                <div class="archive-head">
-                    <div>
-                        <h4>{{ item.label }}</h4>
-                        <p>{{ "管理员" if item.role == 'admin' else '浏览资格' }} / {{ item.code_hint }}</p>
-                    </div>
-                    <div class="history-tags">
-                        <span class="status-pill {% if item.status == 'active' %}tag-new{% elif item.status == 'disabled' %}tag-update{% else %}tag-empty{% endif %}">
-                            {{ "生效中" if item.status == 'active' else "已停用" if item.status == 'disabled' else "已删除" }}
-                        </span>
-                    </div>
-                </div>
-                <div class="file-notes">
-                    <p>创建时间：{{ item.created_at }}</p>
-                    <p>最近更新时间：{{ item.updated_at }}</p>
-                    <p>最近使用：{{ item.last_used_at }}</p>
-                    {% if item.notes %}
-                        <p>{{ item.notes }}</p>
-                    {% endif %}
-                </div>
-                <div class="archive-actions">
-                    {% if item.can_disable %}
-                        <form method="post" action="{{ url_for('main.access_manage_action', identity_id=item.id, action='disable') }}">
-                            {{ csrf_input() }}
-                            <button type="submit" class="ghost-button small danger-button" data-confirm="确认停用这串访问码吗？">停用</button>
-                        </form>
-                    {% endif %}
-                    {% if item.can_activate %}
-                        <form method="post" action="{{ url_for('main.access_manage_action', identity_id=item.id, action='activate') }}">
-                            {{ csrf_input() }}
-                            <button type="submit" class="primary-button small" data-confirm="确认重新启用这串访问码吗？">重新启用</button>
-                        </form>
-                    {% endif %}
-                    {% if item.can_delete %}
-                        <form method="post" action="{{ url_for('main.access_manage_action', identity_id=item.id, action='delete') }}">
-                            {{ csrf_input() }}
-                            <button type="submit" class="ghost-button small danger-button" data-confirm="确认彻底删除这串访问码吗？">删除</button>
-                        </form>
-                    {% endif %}
-                </div>
-            </article>
-        {% endfor %}
-    </div>
 </section>
 {% endblock %}

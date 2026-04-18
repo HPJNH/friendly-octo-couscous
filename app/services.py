@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import zipfile
 from collections import defaultdict
@@ -19,19 +20,28 @@ from .constants import (
     FEATURED_SECTION_KEYS,
     FILE_STATUS_CLASS_MAP,
     FILE_STATUS_LABELS,
+    FRONTEND_READING_CATEGORIES,
+    FRONTEND_SECONDARY_LABELS,
+    FRONTEND_SECTION_DISPLAY,
+    FRONTEND_STATUS_CLASS_MAP,
+    FRONTEND_STATUS_LABELS,
+    FRONTEND_STATUS_ORDER,
     PARSER_VERSION,
+    REPORT_NOTE_DISPLAY_LABELS,
     SECTION_DEFINITIONS,
     SECTION_KEY_ALIASES,
     SECTION_MAP,
     SECTION_ORDER,
-    SECTION_UI_GROUPS,
+    SECTION_SUBCATEGORY_RULES,
     SOFT_HIDDEN_SECTION_KEYS,
     STATUS_CLASS_MAP,
     VISIBLE_SECTION_DEFINITIONS,
     VISIBLE_SECTION_MAP,
     VISIBLE_SECTION_ORDER,
+    WORKBENCH_SHORTCUT_DEFINITIONS,
 )
 from .db import get_connection
+from .mark_service import apply_mark_summaries_to_cards, fetch_entry_mark_summaries
 from .parsers import (
     UnsupportedFileError,
     build_sections_from_blocks,
@@ -79,6 +89,10 @@ FILE_LIBRARY_FOLDER_MAP = {
 ITEM_STATUS_ORDER = ["新增", "更新", "背景补充", "历史保留", "占位项", "无内容"]
 
 
+HEADING_PREFIX_PATTERN = re.compile(r"^\s*(\d+)\.(\d+)\s*[、.\-]?\s*")
+NUMBER_PREFIX_PATTERN = re.compile(r"^\s*[\dA-Za-z一二三四五六七八九十]+(?:\.[\dA-Za-z]+)*\s*[、.．)\-]?\s*")
+
+
 @dataclass
 class ProcessingResult:
     success: bool
@@ -104,17 +118,365 @@ def get_visible_section_rows(section_map: dict[str, dict]) -> list[dict]:
     return [section_map[key] for key in VISIBLE_SECTION_ORDER if key in section_map]
 
 
+def get_frontend_section_meta(section_key: str) -> dict:
+    return FRONTEND_SECTION_DISPLAY.get(
+        section_key,
+        {
+            "category_key": section_key,
+            "category_title": SECTION_MAP.get(section_key, {}).get("title", section_key),
+            "section_title": SECTION_MAP.get(section_key, {}).get("title", section_key),
+            "view_label": "",
+            "nav_title": SECTION_MAP.get(section_key, {}).get("title", section_key),
+        },
+    )
+
+
+def get_display_status_payload(status: str, *, needs_review: bool = False) -> dict:
+    if needs_review:
+        return {
+            "label": "待复核",
+            "class": FRONTEND_STATUS_CLASS_MAP["待复核"],
+            "filter_value": "待复核",
+        }
+    label = FRONTEND_STATUS_LABELS.get(status, status)
+    return {
+        "label": label,
+        "class": FRONTEND_STATUS_CLASS_MAP.get(label, STATUS_CLASS_MAP.get(status, "")),
+        "filter_value": label,
+    }
+
+
+def translate_status_counts(status_counts: dict[str, int] | None, review_count: int = 0) -> dict[str, int]:
+    translated = {label: 0 for label in FRONTEND_STATUS_ORDER}
+    for status, count in (status_counts or {}).items():
+        label = FRONTEND_STATUS_LABELS.get(status)
+        if not label or not count:
+            continue
+        translated[label] += count
+    if review_count:
+        translated["待复核"] += review_count
+    return translated
+
+
+def build_status_pills(status_counts: dict[str, int]) -> list[dict]:
+    pills = []
+    for label in FRONTEND_STATUS_ORDER:
+        count = status_counts.get(label, 0)
+        if not count:
+            continue
+        pills.append({"label": label, "count": count, "class": FRONTEND_STATUS_CLASS_MAP.get(label, "")})
+    return pills
+
+
+def strip_display_prefix(text: str) -> str:
+    return NUMBER_PREFIX_PATTERN.sub("", (text or "").strip()).strip()
+
+
+def resolve_section_subcategory(section_key: str, title: str) -> str:
+    normalized = normalize_compare_text(title or "")
+    if not normalized:
+        return ""
+    for rule in SECTION_SUBCATEGORY_RULES.get(section_key, []):
+        keywords = [normalize_compare_text(keyword) for keyword in rule.get("keywords", [])]
+        if any(keyword and keyword in normalized for keyword in keywords):
+            return rule["title"]
+    return ""
+
+
+def translate_group_heading(section_key: str, title: str | None) -> str:
+    if not title:
+        return ""
+    stripped = (title or "").strip()
+    if not stripped:
+        return ""
+    if section_key == "report_note":
+        for prefix, display in REPORT_NOTE_DISPLAY_LABELS.items():
+            if stripped.startswith(prefix):
+                return display
+        return strip_display_prefix(stripped)
+
+    match = HEADING_PREFIX_PATTERN.match(stripped)
+    if match:
+        subsection_label = FRONTEND_SECONDARY_LABELS.get(match.group(2))
+        if subsection_label:
+            return subsection_label
+
+    subcategory_label = resolve_section_subcategory(section_key, stripped)
+    if subcategory_label:
+        return subcategory_label
+
+    if section_key in SECTION_SUBCATEGORY_RULES:
+        return ""
+
+    return strip_display_prefix(stripped)
+
+
+def build_sidebar_primary_links(nav_date: str | None) -> list[dict]:
+    dashboard_link = f"/day/{nav_date}" if nav_date else "/"
+    return [
+        {"key": "today_focus", "title": "今日重点", "href": f"{dashboard_link}#today-focus"},
+        {"key": "today_new", "title": "今日新增", "href": f"{dashboard_link}#today-new"},
+        {"key": "theme_track", "title": "主题赛道", "href": f"{dashboard_link}#reading-category-theme_track"},
+        {"key": "recent_changes", "title": "近期变化", "href": f"{dashboard_link}#recent-versions"},
+        {"key": "history_archive", "title": "历史归档", "href": "/history"},
+    ]
+
+
+def build_sidebar_reading_links(nav_date: str | None) -> list[dict]:
+    dashboard_link = f"/day/{nav_date}" if nav_date else "/"
+    links = []
+    for category in FRONTEND_READING_CATEGORIES:
+        if category["key"] == "reading_note":
+            continue
+        links.append(
+            {
+                "key": category["key"],
+                "title": category["title"],
+                "description": category["description"],
+                "href": f"{dashboard_link}#reading-category-{category['key']}",
+            }
+        )
+    return links
+
+
+def translate_frontend_copy(text: str | None) -> str:
+    if not text:
+        return ""
+    translated = str(text)
+    replacements = (
+        ("补采窗口", "本期新增"),
+        ("背景补充", "延伸背景"),
+        ("历史保留", "历史延续"),
+        ("占位项", "本期无新增"),
+        ("无内容", "本期无新增"),
+        ("待人工复核", "待复核"),
+        ("当前状态说明", "板块判断"),
+        ("报告说明", "阅读说明"),
+        ("方法说明", "阅读说明"),
+        ("采集说明", "阅读说明"),
+    )
+    for source, target in replacements:
+        translated = translated.replace(source, target)
+    return translated
+
+
+def build_workbench_shortcuts(report_date: str) -> list[dict]:
+    shortcuts = []
+    base_href = f"/day/{report_date}"
+    for item in WORKBENCH_SHORTCUT_DEFINITIONS:
+        if item["key"] == "history_archive":
+            url = "/history"
+        else:
+            url = f"{base_href}#{item['anchor']}"
+        shortcuts.append(
+            {
+                "key": item["key"],
+                "title": item["title"],
+                "description": item["description"],
+                "href": url,
+            }
+        )
+    return shortcuts
+
+
+def _section_priority_tuple(section: dict) -> tuple:
+    return (
+        1 if section.get("manual_mark_count") else 0,
+        section.get("manual_mark_count", 0),
+        1 if section.get("display_content") else 0,
+        1 if section.get("review_count") else 0,
+        1 if section.get("new_count") else 0,
+        1 if section.get("updated_count") else 0,
+        1 if section.get("key") in FEATURED_SECTION_KEYS else 0,
+        section.get("new_count", 0),
+        section.get("updated_count", 0),
+        -section.get("number", 99),
+    )
+
+
+def build_today_focus_sections(sections: list[dict]) -> list[dict]:
+    candidates = [
+        section
+        for section in sections
+        if section.get("display_content")
+        and (
+            section.get("manual_mark_count")
+            or section.get("latest_mark_at")
+            or section.get("new_count")
+            or section.get("updated_count")
+            or section.get("review_count")
+            or section.get("key") in FEATURED_SECTION_KEYS
+        )
+    ]
+    if not candidates:
+        candidates = [section for section in sections if section.get("display_content")]
+    if not candidates:
+        candidates = list(sections)
+    return sorted(candidates, key=_section_priority_tuple, reverse=True)[:4]
+
+
+def build_today_new_sections(sections: list[dict]) -> list[dict]:
+    candidates = [
+        section
+        for section in sections
+        if section.get("display_content")
+        and (
+            section.get("new_count")
+            or section.get("updated_count")
+            or section.get("review_count")
+        )
+    ]
+    return sorted(candidates, key=_section_priority_tuple, reverse=True)
+
+
+def build_filter_options(display_status_counts: dict[str, int]) -> list[dict]:
+    return [
+        {"label": label, "count": display_status_counts.get(label, 0)}
+        for label in FRONTEND_STATUS_ORDER
+    ]
+
+
+def collect_render_model_cards(render_model: dict) -> list[dict]:
+    cards: list[dict] = []
+    for group in render_model.get("groups", []):
+        for block in group.get("blocks", []):
+            if block.get("type") == "card" and block.get("card"):
+                cards.append(block["card"])
+            elif block.get("type") == "table" and block.get("cards"):
+                cards.extend([card for card in block.get("cards", []) if card])
+    return cards
+
+
+def apply_section_preview_marks(
+    sections: list[dict],
+    *,
+    viewer_identity_id: int | None = None,
+    viewer_role: str = "guest",
+) -> dict[int, dict]:
+    entry_ids = []
+    for section in sections:
+        entry_ids.extend(section.get("entry_ids") or [])
+
+    summaries = fetch_entry_mark_summaries(
+        entry_ids,
+        viewer_identity_id=viewer_identity_id,
+        viewer_role=viewer_role,
+    )
+    empty_summary = {
+        "has_marks": False,
+        "count": 0,
+        "items": [],
+        "highlight_note": "",
+        "latest_mark_at": "",
+        "latest_marker_label": "",
+        "viewer_can_mark": bool(viewer_identity_id),
+        "viewer_mark": None,
+    }
+
+    for section in sections:
+        preview_summaries = []
+        for preview in section.get("preview_cards", []):
+            summary = summaries.get(preview.get("entry_id")) or dict(empty_summary)
+            preview["mark_summary"] = summary
+            preview["has_manual_marks"] = summary["has_marks"]
+            if summary["has_marks"]:
+                preview_summaries.append(summary)
+
+        preview_summaries.sort(
+            key=lambda item: (
+                item.get("latest_mark_at") or "",
+                item.get("count", 0),
+            ),
+            reverse=True,
+        )
+        top_summary = preview_summaries[0] if preview_summaries else None
+        section["manual_mark_count"] = sum(item.get("count", 0) for item in preview_summaries)
+        section["has_manual_marks"] = bool(top_summary)
+        section["manual_mark_note"] = top_summary.get("highlight_note", "") if top_summary else ""
+        section["latest_mark_at"] = top_summary.get("latest_mark_at", "") if top_summary else ""
+        section["latest_marker_label"] = top_summary.get("latest_marker_label", "") if top_summary else ""
+    return summaries
+
+
+def apply_detail_marks(
+    render_model: dict,
+    *,
+    viewer_identity_id: int | None = None,
+    viewer_role: str = "guest",
+) -> dict[int, dict]:
+    cards = collect_render_model_cards(render_model)
+    return apply_mark_summaries_to_cards(
+        cards,
+        viewer_identity_id=viewer_identity_id,
+        viewer_role=viewer_role,
+    )
+
+
+def translate_card_for_frontend(section_key: str, card: dict, fallback_status: str) -> dict:
+    translated = deepcopy(card)
+    internal_status = translated.get("status") or fallback_status
+    status_payload = get_display_status_payload(
+        internal_status,
+        needs_review=bool(translated.get("needs_review")),
+    )
+    translated["internal_status"] = internal_status
+    translated["status"] = status_payload["label"]
+    translated["status_class"] = status_payload["class"]
+    translated["filter_value"] = status_payload["filter_value"]
+    translated["source_title"] = translated.get("source_title") or translated.get("title") or "未命名来源"
+    translated["group_title_display"] = translate_group_heading(section_key, translated.get("group_title"))
+    translated["why"] = translate_frontend_copy(translated.get("why"))
+    return translated
+
+
+def build_frontend_render_model(section_key: str, render_model: dict, section_status: str) -> dict:
+    frontend_model = deepcopy(render_model)
+    groups = frontend_model.get("groups", [])
+    review_count = 0
+
+    for group in groups:
+        raw_title = group.get("title") or ""
+        raw_category = group.get("category") or ""
+        display_title = translate_group_heading(section_key, raw_title)
+        display_category = resolve_section_subcategory(section_key, raw_category or raw_title)
+        if not display_category and raw_category and section_key not in SECTION_SUBCATEGORY_RULES:
+            display_category = strip_display_prefix(raw_category)
+        group["display_title"] = display_title
+        group["display_category"] = display_category
+
+        translated_blocks = []
+        for block in group.get("blocks", []):
+            translated_block = deepcopy(block)
+            if translated_block.get("type") == "card" and translated_block.get("card"):
+                translated_card = translate_card_for_frontend(section_key, translated_block["card"], section_status)
+                translated_block["card"] = translated_card
+                review_count += 1 if translated_card.get("needs_review") else 0
+            elif translated_block.get("type") == "table" and translated_block.get("cards"):
+                translated_cards = []
+                for card in translated_block.get("cards", []):
+                    translated_card = translate_card_for_frontend(section_key, card, section_status)
+                    translated_cards.append(translated_card)
+                    review_count += 1 if translated_card.get("needs_review") else 0
+                translated_block["cards"] = translated_cards
+            translated_blocks.append(translated_block)
+        group["blocks"] = translated_blocks
+
+    display_status_counts = translate_status_counts(frontend_model.get("status_counts"), review_count)
+    frontend_model["display_status_counts"] = display_status_counts
+    frontend_model["filter_options"] = build_filter_options(display_status_counts)
+    return frontend_model
+
+
 def group_sections_for_ui(section_map: dict[str, dict]) -> list[dict]:
     groups = []
-    for group in SECTION_UI_GROUPS:
+    for group in FRONTEND_READING_CATEGORIES:
         items = [section_map[key] for key in group["section_keys"] if key in section_map]
-        if not items:
-            continue
         groups.append(
             {
                 "key": group["key"],
                 "title": group["title"],
                 "description": group["description"],
+                "anchor_id": f"reading-category-{group['key']}",
                 "sections": items,
             }
         )
@@ -122,9 +484,11 @@ def group_sections_for_ui(section_map: dict[str, dict]) -> list[dict]:
 
 
 def get_section_group_meta(section_key: str) -> dict:
-    for group in SECTION_UI_GROUPS:
-        if section_key in group["section_keys"]:
+    section_meta = get_frontend_section_meta(section_key)
+    for group in FRONTEND_READING_CATEGORIES:
+        if group["key"] == section_meta["category_key"]:
             return group
+    return {"key": "hidden", "title": section_meta["category_title"], "description": "该板块当前仅保留历史回退能力。"}
     return {"key": "hidden", "title": "隐藏板块", "description": "该板块当前仅保留历史回退能力。"}
 
 
@@ -174,33 +538,15 @@ def validate_uploaded_file_signature(file_path: Path, extension: str) -> tuple[b
 def get_layout_context(selected_date: str | None = None) -> dict:
     latest_date = get_latest_report_date()
     nav_date = selected_date or latest_date
-    grouped_sections = []
-    for group in SECTION_UI_GROUPS:
-        items = []
-        for section_key in group["section_keys"]:
-            section = VISIBLE_SECTION_MAP[section_key]
-            items.append(
-                {
-                    "key": section["key"],
-                    "number": section["number"],
-                    "title": section["title"],
-                    "link": f"/section/{nav_date}/{section['key']}" if nav_date else None,
-                }
-            )
-        grouped_sections.append(
-            {
-                "key": group["key"],
-                "title": group["title"],
-                "description": group["description"],
-                "items": items,
-            }
-        )
     debug_link = f"/debug/sections/{nav_date}" if nav_date else None
     export_link = f"/export/pdf/{nav_date}" if nav_date else None
     return {
         "latest_date": latest_date,
         "dashboard_link": f"/day/{nav_date}" if nav_date else "/",
-        "sidebar_section_groups": grouped_sections,
+        "sidebar_primary_links": build_sidebar_primary_links(nav_date),
+        "sidebar_reading_links": build_sidebar_reading_links(nav_date),
+        "reading_note_link": f"/day/{nav_date}#reading-category-reading_note" if nav_date else "/",
+        "sidebar_section_groups": [],
         "nav_date": nav_date,
         "debug_link": debug_link,
         "export_link": export_link,
@@ -1032,7 +1378,12 @@ def write_archive_json(report_date: str, doc_type: str, payload: dict) -> Path:
     return archive_path
 
 
-def get_day_snapshot(report_date: str) -> dict:
+def get_day_snapshot(
+    report_date: str,
+    *,
+    viewer_identity_id: int | None = None,
+    viewer_role: str = "guest",
+) -> dict:
     with get_connection(current_app.config["DATABASE_PATH"]) as connection:
         brief = get_current_document(connection, report_date, "brief")
         draft = get_current_document(connection, report_date, "draft")
@@ -1046,28 +1397,36 @@ def get_day_snapshot(report_date: str) -> dict:
             section_map = {definition["key"]: empty_section_card(definition["key"]) for definition in VISIBLE_SECTION_DEFINITIONS}
 
     sections = get_visible_section_rows(section_map)
+    apply_section_preview_marks(
+        sections,
+        viewer_identity_id=viewer_identity_id,
+        viewer_role=viewer_role,
+    )
     section_groups = group_sections_for_ui(section_map)
-    featured_sections = [section_map[key] for key in FEATURED_SECTION_KEYS if key in section_map and section_map[key]["display_content"]]
-    if not featured_sections:
-        featured_sections = [section_map[key] for key in FEATURED_SECTION_KEYS if key in section_map]
+    today_focus_sections = build_today_focus_sections(sections)
+    today_new_sections = build_today_new_sections(sections)
+    featured_sections = today_focus_sections
 
     section_status_counts = defaultdict(int)
     item_status_counts = defaultdict(int)
     review_items = 0
     for section in sections:
         section_status_counts[section["status"]] += 1
-        for label, count in section.get("item_status_counts", {}).items():
+        for label, count in section.get("internal_item_status_counts", {}).items():
             item_status_counts[label] += count
         review_items += section.get("needs_review_count", 0)
 
     sections_with_content = sum(1 for section in sections if section["display_content"])
+    display_status_counts = translate_status_counts(item_status_counts, review_items)
     overview = {
         "date": report_date,
         "sections_with_content": sections_with_content,
         "draft_uploaded": bool(draft),
         "current_draft_date": draft["report_date"] if draft else get_latest_effective_date_by_type("draft"),
         "visible_sections": len(sections),
-        "featured_sections": sum(1 for section in featured_sections if section["display_content"]),
+        "featured_sections": len(today_focus_sections),
+        "today_focus_sections": len(today_focus_sections),
+        "today_new_sections": len(today_new_sections),
         "new_items": item_status_counts.get("新增", 0),
         "updated_items": item_status_counts.get("更新", 0),
         "background_items": item_status_counts.get("背景补充", 0),
@@ -1081,9 +1440,14 @@ def get_day_snapshot(report_date: str) -> dict:
         "brief": build_brief_card(brief),
         "draft": build_draft_card(draft),
         "sections": sections,
+        "today_focus_sections": today_focus_sections,
+        "today_new_sections": today_new_sections,
         "featured_sections": featured_sections,
         "section_groups": section_groups,
-        "status_counts": dict(section_status_counts),
+        "workbench_shortcuts": build_workbench_shortcuts(report_date),
+        "status_counts": display_status_counts,
+        "status_pills": build_status_pills(display_status_counts),
+        "section_status_counts": dict(section_status_counts),
         "item_status_counts": dict(item_status_counts),
         "overview": overview,
         "retained_assets": {
@@ -1132,6 +1496,40 @@ def build_draft_card(row) -> dict:
 
 
 def empty_section_card(section_key: str) -> dict:
+    section_meta = get_frontend_section_meta(section_key)
+    display_status = get_display_status_payload("无内容")
+    display_status_counts = translate_status_counts({"无内容": 1})
+    return {
+        "key": section_key,
+        "number": SECTION_MAP[section_key]["number"],
+        "title": section_meta["section_title"],
+        "display_title": section_meta["view_label"] or section_meta["section_title"],
+        "display_kicker": section_meta["category_title"] if section_meta["view_label"] else "",
+        "category_key": section_meta["category_key"],
+        "category_title": section_meta["category_title"],
+        "view_label": section_meta["view_label"],
+        "internal_title": SECTION_MAP[section_key]["title"],
+        "internal_status": "无内容",
+        "status": display_status["label"],
+        "status_class": display_status["class"],
+        "excerpt": "本日未提供该板块内容。",
+        "note": translate_frontend_copy("请上传包含该板块内容的研究底稿。"),
+        "detail_url": None,
+        "display_content": "",
+        "raw_content": "",
+        "source_file_name": "",
+        "source_date": None,
+        "similarity": None,
+        "item_status_counts": display_status_counts,
+        "status_pills": build_status_pills(display_status_counts),
+        "internal_item_status_counts": {"新增": 0, "更新": 0, "背景补充": 0, "历史保留": 0, "占位项": 0, "无内容": 1},
+        "preview_mode": "text",
+        "preview_cards": [],
+        "needs_review_count": 0,
+        "new_count": 0,
+        "updated_count": 0,
+        "review_count": 0,
+    }
     definition = SECTION_MAP[section_key]
     return {
         "key": section_key,
@@ -1153,6 +1551,8 @@ def empty_section_card(section_key: str) -> dict:
 
 
 def build_section_card(connection: sqlite3.Connection, row) -> dict:
+    section_key = row["section_key"]
+    section_meta = get_frontend_section_meta(section_key)
     source_file_name = row["current_file_name"]
     render_payload = load_row_render_payload(row)
     cards = extract_cards_from_render_payload(render_payload)
@@ -1171,6 +1571,46 @@ def build_section_card(connection: sqlite3.Connection, row) -> dict:
             source_file_name = source_file["original_name"]
 
     display_content = row["display_content"]
+    needs_review_count = sum(1 for card in cards if card.get("needs_review"))
+    display_status = get_display_status_payload(row["status"])
+    display_status_counts = translate_status_counts(status_counts, needs_review_count)
+    return {
+        "key": section_key,
+        "number": SECTION_MAP[section_key]["number"],
+        "title": section_meta["section_title"],
+        "display_title": section_meta["view_label"] or section_meta["section_title"],
+        "display_kicker": section_meta["category_title"] if section_meta["view_label"] else "",
+        "category_key": section_meta["category_key"],
+        "category_title": section_meta["category_title"],
+        "view_label": section_meta["view_label"],
+        "internal_title": row["section_title"],
+        "internal_status": row["status"],
+        "status": display_status["label"],
+        "status_class": display_status["class"],
+        "excerpt": preview_payload["excerpt"],
+        "note": translate_frontend_copy(row["note"]),
+        "detail_url": f"/section/{row['report_date']}/{section_key}",
+        "display_content": display_content,
+        "raw_content": row["raw_content"],
+        "source_file_name": source_file_name,
+        "source_date": row["source_date"],
+        "similarity": row["similarity"],
+        "item_status_counts": display_status_counts,
+        "status_pills": build_status_pills(display_status_counts),
+        "internal_item_status_counts": status_counts,
+        "preview_mode": preview_payload["mode"],
+        "preview_cards": preview_payload["cards"],
+        "needs_review_count": needs_review_count,
+        "new_count": status_counts.get("新增", 0),
+        "updated_count": status_counts.get("更新", 0),
+        "review_count": needs_review_count,
+        "entry_ids": [preview["entry_id"] for preview in preview_payload["cards"] if preview.get("entry_id")],
+        "manual_mark_count": 0,
+        "has_manual_marks": False,
+        "manual_mark_note": "",
+        "latest_mark_at": "",
+        "latest_marker_label": "",
+    }
     return {
         "key": row["section_key"],
         "number": SECTION_MAP[row["section_key"]]["number"],
@@ -1196,6 +1636,22 @@ def build_section_preview_payload(render_payload: dict, fallback_text: str) -> d
     cards = extract_cards_from_render_payload(render_payload)
     if cards:
         preview_cards = [build_preview_card(card) for card in cards[:2]]
+        for preview_card, source_card in zip(preview_cards, cards[:2]):
+            preview_card["entry_id"] = source_card.get("entry_id")
+            preview_card.setdefault(
+                "mark_summary",
+                {
+                    "has_marks": False,
+                    "count": 0,
+                    "items": [],
+                    "highlight_note": "",
+                    "latest_mark_at": "",
+                    "latest_marker_label": "",
+                    "viewer_can_mark": False,
+                    "viewer_mark": None,
+                },
+            )
+            preview_card.setdefault("has_manual_marks", False)
         preview_excerpt = preview_cards[0]["body"] if preview_cards and preview_cards[0]["body"] else fallback_text
         return {
             "mode": "cards",
@@ -1212,6 +1668,7 @@ def build_section_preview_payload(render_payload: dict, fallback_text: str) -> d
 def build_preview_card(card: dict) -> dict:
     body = build_excerpt(card.get("core_content") or "", limit=72)
     why = build_excerpt(card.get("why") or "", limit=56) if card.get("why") else ""
+    display_status = get_display_status_payload(card.get("status") or "历史保留", needs_review=bool(card.get("needs_review")))
     meta = [value for value in [card.get("time"), card.get("source")] if value]
     if card.get("first_seen"):
         meta.append(f"首次 {card['first_seen']}")
@@ -1220,11 +1677,11 @@ def build_preview_card(card: dict) -> dict:
     return {
         "title": card.get("title") or "情报预览",
         "body": body,
-        "why": why,
+        "why": translate_frontend_copy(why),
         "meta": meta,
         "tags": (card.get("tags") or [])[:3],
-        "status": card.get("status") or "历史保留",
-        "status_class": card.get("status_class") or STATUS_CLASS_MAP.get(card.get("status") or "历史保留", ""),
+        "status": display_status["label"],
+        "status_class": display_status["class"],
     }
 
 
@@ -1741,6 +2198,12 @@ def get_history_overview(limit: int = 30) -> list[dict]:
     ordered = sorted(days.values(), key=lambda item: item["report_date"], reverse=True)
     for day in ordered:
         day["can_export"] = bool(day["has_draft"])
+        display_status_counts = translate_status_counts(day["status_counts"])
+        day["display_status_counts"] = display_status_counts
+        day["display_status_pills"] = build_status_pills(display_status_counts)
+        day["status_counts"] = dict(day["status_counts"])
+        day["draft_versions"] = dict(day["draft_versions"])
+        day["brief_versions"] = dict(day["brief_versions"])
     return ordered[:limit]
 
 
@@ -1748,7 +2211,13 @@ def get_recent_days(limit: int = 8) -> list[dict]:
     return get_history_overview(limit=limit)
 
 
-def get_section_detail(report_date: str, section_key: str) -> dict | None:
+def get_section_detail(
+    report_date: str,
+    section_key: str,
+    *,
+    viewer_identity_id: int | None = None,
+    viewer_role: str = "guest",
+) -> dict | None:
     section_key = resolve_section_key(section_key)
     if section_key not in SECTION_MAP:
         return None
@@ -1770,6 +2239,12 @@ def get_section_detail(report_date: str, section_key: str) -> dict | None:
         metadata.get("display_render") or metadata.get("raw_render") or fallback_render_payload(row["section_title"], row["raw_content"], row["status"])
     )
     render_model.setdefault("status_counts", infer_render_status_counts(row["status"], render_model, row["display_content"] or row["raw_content"] or ""))
+    render_model = build_frontend_render_model(section_key, render_model, row["status"])
+    mark_summaries = apply_detail_marks(
+        render_model,
+        viewer_identity_id=viewer_identity_id,
+        viewer_role=viewer_role,
+    )
     raw_content = row["raw_content"] or ""
     has_effective_content = bool(raw_content.strip())
     parse_warning = ""
@@ -1777,16 +2252,25 @@ def get_section_detail(report_date: str, section_key: str) -> dict | None:
         parse_warning = "本板块本日未解析出有效正文，请检查原始文档结构或解析结果。"
     group_meta = get_section_group_meta(section_key)
     is_soft_hidden = section_key in SOFT_HIDDEN_SECTION_KEYS
+    section_meta = get_frontend_section_meta(section_key)
+    display_status = get_display_status_payload(row["status"])
 
     return {
         "report_date": report_date,
         "section_key": section_key,
-        "title": row["section_title"],
-        "status": row["status"],
-        "status_class": STATUS_CLASS_MAP[row["status"]],
+        "title": section_meta["section_title"],
+        "category_key": section_meta["category_key"],
+        "category_title": section_meta["category_title"],
+        "view_label": section_meta["view_label"],
+        "display_title": section_meta["view_label"] or section_meta["section_title"],
+        "display_kicker": section_meta["category_title"] if section_meta["view_label"] else "",
+        "status": display_status["label"],
+        "status_class": display_status["class"],
+        "internal_title": row["section_title"],
+        "internal_status": row["status"],
         "raw_content": raw_content,
         "display_content": row["display_content"],
-        "note": row["note"],
+        "note": translate_frontend_copy(row["note"]),
         "source_file_name": row["current_file_name"],
         "source_file_path": row["current_file_path"],
         "source_date": row["source_date"] or report_date,
@@ -1794,23 +2278,25 @@ def get_section_detail(report_date: str, section_key: str) -> dict | None:
         "current_file_path": row["current_file_path"],
         "current_file_id": row.get("current_document_id") or row["document_id"],
         "render_model": render_model,
+        "manual_mark_count": sum(1 for summary in mark_summaries.values() if summary.get("has_marks")),
         "has_effective_content": has_effective_content,
         "parse_warning": parse_warning,
         "debug_url": f"/debug/sections/{report_date}",
         "day_url": f"/day/{report_date}",
         "export_url": f"/export/pdf/{report_date}",
-        "filter_counts": render_model["status_counts"],
+        "filter_counts": render_model["display_status_counts"],
+        "filter_options": render_model["filter_options"],
         "group_title": group_meta["title"],
-        "group_description": group_meta["description"],
+        "group_description": translate_frontend_copy(group_meta["description"]),
         "is_soft_hidden": is_soft_hidden,
         "visibility_note": "该板块已从主导航与导出结构中软移除，当前页面仅保留历史回退访问能力。" if is_soft_hidden else "",
         "history_rows": [
             {
                 "report_date": history_row["report_date"],
-                "status": history_row["status"],
-                "status_class": STATUS_CLASS_MAP[history_row["status"]],
-                "note": history_row["note"],
-                "excerpt": build_excerpt(history_row.get("excerpt") or "本日无有效结构化条目"),
+                "status": get_display_status_payload(history_row["status"]).get("label"),
+                "status_class": get_display_status_payload(history_row["status"]).get("class"),
+                "note": translate_frontend_copy(history_row["note"]),
+                "excerpt": build_excerpt(translate_frontend_copy(history_row.get("excerpt") or "本日无有效结构化条目")),
             }
             for history_row in history_rows
         ],

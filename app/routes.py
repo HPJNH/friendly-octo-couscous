@@ -7,6 +7,7 @@ from .admin_auth import (
     access_required,
     admin_required,
     build_safe_next,
+    change_access_identity_code,
     clear_access_session,
     create_access_identity,
     current_access_label,
@@ -14,12 +15,14 @@ from .admin_auth import (
     current_access_session,
     generate_access_code,
     get_access_management_view,
+    get_current_access_identity,
     is_access_verified,
     is_admin_verified,
     update_access_identity_status,
     verify_access_secret,
 )
 from .constants import SECTION_DEFINITIONS
+from .mark_service import deactivate_entry_mark, upsert_entry_mark
 from .security import (
     clear_auth_failures,
     csrf_input,
@@ -56,12 +59,34 @@ from .utils import today_string
 bp = Blueprint("main", __name__)
 
 
+def _resolve_display_name() -> str:
+    payload = current_access_session() or {}
+    candidates = [
+        payload.get("display_name"),
+        payload.get("name"),
+        payload.get("label"),
+    ]
+    blocked_keywords = ("Bootstrap", "访问码", "管理员")
+    blocked_values = {"未验证", "guest", "viewer", "admin"}
+    for value in candidates:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        if text in blocked_values:
+            continue
+        if any(keyword in text for keyword in blocked_keywords):
+            continue
+        return text
+    return ""
+
+
 def _csrf_redirect_target(endpoint: str) -> str:
     mapping = {
         "main.access_login": url_for("main.access_login"),
         "main.admin_verify": url_for("main.admin_verify"),
         "main.access_manage": url_for("main.access_manage"),
         "main.access_manage_action": url_for("main.access_manage"),
+        "main.access_change_code": url_for("main.access_change_code"),
         "main.upload": url_for("main.upload"),
         "main.access_logout": url_for("main.index"),
     }
@@ -79,15 +104,21 @@ def _lock_message(scope: str, state: dict) -> dict:
 
 @bp.context_processor
 def inject_globals():
+    access_session = current_access_session()
     return {
         "project_name": current_app.config["PROJECT_NAME"],
+        "brand_name": current_app.config["BRAND_NAME"],
+        "product_subtitle": current_app.config["PRODUCT_SUBTITLE"],
+        "brand_slogan": current_app.config["BRAND_SLOGAN"],
         "section_catalog": SECTION_DEFINITIONS,
         "access_control_enabled": access_control_enabled(),
         "access_verified": is_access_verified(),
         "access_role": current_access_role(),
         "access_label": current_access_label(),
-        "access_session": current_access_session(),
+        "access_session": access_session,
         "admin_verified": is_admin_verified(),
+        "display_name": _resolve_display_name(),
+        "can_change_access_code": bool((access_session or {}).get("identity_id")),
         "max_upload_size_mb": current_app.config["MAX_CONTENT_LENGTH_MB"],
         "csrf_token": get_csrf_token,
         "csrf_input": csrf_input,
@@ -194,7 +225,7 @@ def admin_verify():
             flash(_lock_message("admin_verify", state), "error")
             return redirect(url_for("main.admin_verify", next=next_url))
 
-        body = "管理员访问码或 bootstrap 管理密码不正确。"
+        body = "管理员访问码不正确。"
         if reason == "role-denied":
             body = "这串访问码只能浏览，不能执行管理操作。"
         flash({"title": "管理验证失败", "body": body}, "error")
@@ -225,7 +256,7 @@ def access_manage():
         notes = request.form.get("notes", "")
         raw_code = request.form.get("raw_code", "").strip()
         if request.form.get("generate_code") == "yes" and not raw_code:
-            raw_code = generate_access_code("admin" if role == "admin" else "viewer")
+            raw_code = generate_access_code()
             generated_code = raw_code
         try:
             result = create_access_identity(label, raw_code, role, notes)
@@ -254,6 +285,44 @@ def access_manage():
         access_view=get_access_management_view(),
         generated_code=generated_code,
         current_page="access_manage",
+        **layout,
+    )
+
+
+@bp.route("/access/change-code", methods=["GET", "POST"])
+@access_required
+def access_change_code():
+    identity = get_current_access_identity()
+    if not identity:
+        flash({"title": "访问资格已失效", "body": "请重新验证访问码后再修改当前访问码。"}, "error")
+        return redirect(url_for("main.access_login", next=build_safe_next(url_for("main.access_change_code"))))
+
+    if request.method == "POST":
+        try:
+            result = change_access_identity_code(
+                identity["id"],
+                request.form.get("current_code", ""),
+                request.form.get("new_code", ""),
+                request.form.get("confirm_new_code", ""),
+            )
+            log_audit_event(
+                action="access_identity.change_code",
+                target_type="access_identity",
+                target_id=result["id"],
+                target_label=result["label"],
+                detail={"role": result["role"]},
+                actor=current_access_session(),
+            )
+            flash({"title": "访问码已更新", "body": "新的访问码已经生效，请在后续会话中使用新访问码登录。"}, "success")
+            return redirect(url_for("main.access_change_code"))
+        except ValueError as error:
+            flash({"title": "修改失败", "body": str(error)}, "error")
+
+    layout = get_layout_context()
+    return render_template(
+        "access_change_code.html",
+        current_identity=identity,
+        current_page="access_change",
         **layout,
     )
 
@@ -294,7 +363,12 @@ def day(report_date: str):
 
 
 def render_day_page(report_date: str, is_home: bool):
-    snapshot = get_day_snapshot(report_date)
+    access_identity = get_current_access_identity()
+    snapshot = get_day_snapshot(
+        report_date,
+        viewer_identity_id=access_identity["id"] if access_identity else None,
+        viewer_role=access_identity["role"] if access_identity else current_access_role(),
+    )
     layout = get_layout_context(report_date)
     return render_template(
         "day.html",
@@ -546,7 +620,13 @@ def library_export_download(export_id: int):
 @bp.route("/section/<report_date>/<section_key>")
 @access_required
 def section_detail(report_date: str, section_key: str):
-    detail = get_section_detail(report_date, section_key)
+    access_identity = get_current_access_identity()
+    detail = get_section_detail(
+        report_date,
+        section_key,
+        viewer_identity_id=access_identity["id"] if access_identity else None,
+        viewer_role=access_identity["role"] if access_identity else current_access_role(),
+    )
     if not detail:
         abort(404)
     layout = get_layout_context(report_date)
@@ -556,6 +636,78 @@ def section_detail(report_date: str, section_key: str):
         current_page="section",
         **layout,
     )
+
+
+@bp.route("/marks/<int:entry_id>/upsert", methods=["POST"])
+@access_required
+def entry_mark_upsert(entry_id: int):
+    identity = get_current_access_identity()
+    if not identity:
+        flash({"title": "标记失败", "body": "当前访问资格已失效，请重新登录后再试。"}, "error")
+        return redirect(sanitize_absolute_next(request.form.get("next")) or url_for("main.index"))
+
+    next_url = sanitize_absolute_next(request.form.get("next")) or request.referrer or url_for("main.index")
+    try:
+        result = upsert_entry_mark(
+            entry_id=entry_id,
+            marker_identity_id=identity["id"],
+            marker_label=identity["label"],
+            marker_role=identity["role"],
+            mark_type=request.form.get("mark_type", "focus"),
+            note=request.form.get("note", ""),
+        )
+        log_audit_event(
+            action=f"entry_mark.{result['action']}",
+            target_type="entry_mark",
+            target_id=result["id"],
+            target_label=result["entry_title"],
+            detail={
+                "entry_id": result["entry_id"],
+                "module_key": result["module_key"],
+                "mark_type": result["mark_type"],
+                "has_note": bool(result["note"]),
+            },
+            actor=current_access_session(),
+        )
+        flash({"title": "重点标记已保存", "body": "这条情报已加入你的重点提醒，其他成员现在也能看到。"}, "success")
+    except ValueError as error:
+        flash({"title": "标记失败", "body": str(error)}, "error")
+    return redirect(next_url)
+
+
+@bp.route("/marks/<int:mark_id>/deactivate", methods=["POST"])
+@access_required
+def entry_mark_deactivate(mark_id: int):
+    identity = get_current_access_identity()
+    if not identity:
+        flash({"title": "取消失败", "body": "当前访问资格已失效，请重新登录后再试。"}, "error")
+        return redirect(sanitize_absolute_next(request.form.get("next")) or url_for("main.index"))
+
+    next_url = sanitize_absolute_next(request.form.get("next")) or request.referrer or url_for("main.index")
+    try:
+        result = deactivate_entry_mark(
+            mark_id=mark_id,
+            actor_identity_id=identity["id"],
+            actor_role=identity["role"],
+        )
+        log_audit_event(
+            action="entry_mark.deactivate",
+            target_type="entry_mark",
+            target_id=result["id"],
+            target_label=result["entry_title"],
+            detail={
+                "entry_id": result["entry_id"],
+                "module_key": result["module_key"],
+                "mark_type": result["mark_type"],
+            },
+            actor=current_access_session(),
+        )
+        flash({"title": "重点标记已取消", "body": "这条重点提醒已从当前卡片中移除。"}, "success")
+    except PermissionError as error:
+        flash({"title": "无法取消", "body": str(error)}, "error")
+    except ValueError as error:
+        flash({"title": "取消失败", "body": str(error)}, "error")
+    return redirect(next_url)
 
 
 @bp.route("/debug/sections/<report_date>")

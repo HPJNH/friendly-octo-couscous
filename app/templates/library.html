@@ -1,39 +1,5 @@
 {% extends "base.html" %}
 
-{% block content %}
-<section class="page-card library-page">
-    <div class="section-header">
-        <div>
-            <p class="section-kicker">文件库</p>
-            <h3>集中管理底稿、导出成果与保留资产</h3>
-            <p class="section-description">文件库主视图只突出当前生效底稿、历史底稿版本与导出成果；今日报告相关文件已降级为保留资产，仅用于回退和追溯。</p>
-        </div>
-        {% if access_role == 'admin' %}
-            <a class="ghost-button" href="{{ url_for('main.access_manage') }}">管理访问资格</a>
-        {% else %}
-            <a class="ghost-button" href="{{ url_for('main.admin_verify', next=request.path) }}">切换为管理员</a>
-        {% endif %}
-    </div>
-    <div class="overview-strip library-summary">
-        <article class="overview-tile">
-            <span>当前生效底稿</span>
-            <strong>{{ library_view.summary.get('current_effective_drafts', 0) }}</strong>
-        </article>
-        <article class="overview-tile">
-            <span>历史底稿版本</span>
-            <strong>{{ library_view.archived_files | length }}</strong>
-        </article>
-        <article class="overview-tile">
-            <span>保留资产</span>
-            <strong>{{ library_view.summary.get('retained_assets', 0) }}</strong>
-        </article>
-        <article class="overview-tile">
-            <span>导出文件</span>
-            <strong>{{ library_view.summary.get('exports', 0) }}</strong>
-        </article>
-    </div>
-</section>
-
 {% macro manage_actions(item) -%}
     {% if access_role == 'admin' %}
         {% if item.can_withdraw %}
@@ -54,7 +20,7 @@
                 <button
                     type="submit"
                     class="primary-button small"
-                    data-confirm="确认将这份文件设为当前生效版本吗？同日同类型其他版本会自动归档。"
+                    data-confirm="确认将这份文件设为当前生效版本吗？同日同类其他版本会自动归档。"
                 >设为生效</button>
             </form>
         {% endif %}
@@ -74,12 +40,12 @@
     {% endif %}
 {%- endmacro %}
 
-{% macro file_card(item) -%}
-<article class="library-card">
+{% macro file_card(item, muted=false) -%}
+<article class="library-card library-record-card{% if muted %} is-muted{% endif %}">
     <div class="archive-head">
         <div>
             <h4>{{ item.name }}</h4>
-            <p>{{ item.doc_type_label }} / {{ item.file_ext }}</p>
+            <p class="library-card-type">{{ item.doc_type_label }} / {{ item.file_ext }}</p>
         </div>
         <div class="history-tags">
             <span class="status-pill {{ item.status_class }}">{{ item.status_label }}</span>
@@ -88,10 +54,24 @@
             {% endif %}
         </div>
     </div>
-    <div class="file-notes">
-        <p>上传时间：{{ item.uploaded_at }}</p>
-        <p>归档日期：{{ item.report_date }}</p>
+
+    <div class="library-card-meta">
+        <span class="meta-chip">上传 {{ item.uploaded_at }}</span>
+        <span class="meta-chip soft">归档 {{ item.report_date }}</span>
     </div>
+
+    <p class="card-note">
+        {% if item.is_current %}
+            这份资料正在驱动当前首页、板块详情页与 PDF 导出结果。
+        {% elif item.status_label == '已归档' %}
+            这是一份保留在资料仓中的历史版本，可用于回看和对比。
+        {% elif item.status_label == '已撤回' %}
+            这份资料已退出当前有效版本链，仅保留追溯与回退能力。
+        {% else %}
+            可在资料仓中继续查看详情、下载原件或执行版本管理操作。
+        {% endif %}
+    </p>
+
     <div class="archive-actions">
         <a class="ghost-button small" href="{{ item.detail_url }}">查看详情</a>
         {% if item.status != 'deleted' %}
@@ -102,13 +82,48 @@
 </article>
 {%- endmacro %}
 
-{% if library_view.current_draft %}
-<section class="hero-card library-hero">
+{% block content %}
+<section class="hero-card library-page library-hero-panel">
     <div class="hero-head">
         <div>
-            <p class="section-kicker">当前生效底稿</p>
+            <p class="section-kicker">资料仓</p>
+            <h3>把当前有效版本、历史版本和导出成果放在同一个资料入口里</h3>
+            <p class="hero-subtitle">这里不再只是管理清单，而是当前有效资料的主入口。先看正在生效的底稿，再按历史版本、导出成果和保留资产继续回看。</p>
+        </div>
+        {% if access_role == 'admin' %}
+            <a class="ghost-button" href="{{ url_for('main.access_manage') }}">管理访问资格</a>
+        {% else %}
+            <a class="ghost-button" href="{{ url_for('main.admin_verify', next=request.path) }}">切换为管理员</a>
+        {% endif %}
+    </div>
+
+    <div class="overview-strip library-summary">
+        <article class="overview-tile">
+            <span>当前有效底稿</span>
+            <strong>{{ library_view.summary.get('current_effective_drafts', 0) }}</strong>
+        </article>
+        <article class="overview-tile">
+            <span>历史底稿版本</span>
+            <strong>{{ library_view.archived_files | length }}</strong>
+        </article>
+        <article class="overview-tile">
+            <span>导出成果</span>
+            <strong>{{ library_view.summary.get('exports', 0) }}</strong>
+        </article>
+        <article class="overview-tile">
+            <span>保留资产</span>
+            <strong>{{ library_view.summary.get('retained_assets', 0) }}</strong>
+        </article>
+    </div>
+</section>
+
+{% if library_view.current_draft %}
+<section class="hero-card library-hero current-version-hero">
+    <div class="hero-head">
+        <div>
+            <p class="section-kicker">当前生效版本</p>
             <h3>{{ library_view.current_draft.name }}</h3>
-            <p class="hero-subtitle">当前主界面的累计有效视图和 PDF 导出，都以这条生效底稿版本链为核心。</p>
+            <p class="hero-subtitle">当前首页、板块详情页和 PDF 导出，都会以这份生效底稿作为当前版本链的入口。</p>
         </div>
         <div class="hero-meta">
             <span class="status-pill {{ library_view.current_draft.status_class }}">{{ library_view.current_draft.status_label }}</span>
@@ -116,56 +131,66 @@
         </div>
     </div>
     <div class="detail-actions">
-        <a class="primary-button" href="{{ library_view.current_draft.detail_url }}">查看文件详情</a>
+        <a class="primary-button" href="{{ library_view.current_draft.detail_url }}">查看当前版本详情</a>
         <a class="ghost-button" href="{{ library_view.current_draft.download_url }}">下载原件</a>
     </div>
 </section>
 {% endif %}
 
-<section class="page-card">
+<section class="page-card library-section-card">
     <div class="section-header">
         <div>
-            <p class="section-kicker">研究底稿</p>
-            <h3>底稿文件版本</h3>
+            <p class="section-kicker">资料版本</p>
+            <h3>当前可用的底稿资料</h3>
+            <p class="section-description">这一层展示仍在资料仓主链中的底稿版本。当前生效版本仍会保留在列表中，但会明显标注。</p>
         </div>
     </div>
     <div class="history-list">
         {% for item in library_view.drafts %}
             {{ file_card(item) }}
         {% else %}
-            <div class="empty-panel"><p>文件库里还没有研究底稿。</p></div>
+            <div class="empty-panel">
+                <p>资料仓里还没有研究底稿。</p>
+                <p>上传第一份底稿后，这里会自动形成可追溯的版本入口。</p>
+            </div>
         {% endfor %}
     </div>
 </section>
 
-<section class="page-card">
+<section class="page-card library-section-card">
     <div class="section-header">
         <div>
             <p class="section-kicker">导出成果</p>
-            <h3>PDF 与其他导出文件</h3>
+            <h3>系统整理后的 PDF 与成果文件</h3>
+            <p class="section-description">导出成果继续保留，但只作为资料仓的次级结果入口，不再压过底稿本身。</p>
         </div>
     </div>
     <div class="history-list">
         {% for item in library_view.exports %}
-            {{ file_card(item) }}
+            {{ file_card(item, true) }}
         {% else %}
-            <div class="empty-panel"><p>暂时还没有导出的成果文件。</p></div>
+            <div class="empty-panel">
+                <p>暂时还没有导出的成果文件。</p>
+            </div>
         {% endfor %}
     </div>
 </section>
 
-<section class="page-card">
+<section class="page-card library-section-card">
     <div class="section-header">
         <div>
-            <p class="section-kicker">历史底稿</p>
-            <h3>已归档与已撤回的底稿版本</h3>
+            <p class="section-kicker">历史版本</p>
+            <h3>已归档与已撤回的底稿</h3>
+            <p class="section-description">这些版本已经退出当前有效链，但仍保留在资料仓中，便于回看、追溯和版本对比。</p>
         </div>
     </div>
     <div class="history-list">
         {% for item in library_view.archived_files %}
-            {{ file_card(item) }}
+            {{ file_card(item, true) }}
         {% else %}
-            <div class="empty-panel"><p>当前没有需要单独处理的历史版本。</p></div>
+            <div class="empty-panel">
+                <p>当前没有需要单独处理的历史底稿版本。</p>
+            </div>
         {% endfor %}
     </div>
 </section>
@@ -174,17 +199,19 @@
     <div class="section-header">
         <div>
             <p class="section-kicker">保留资产</p>
-            <h3>隐藏类型与历史回退文件</h3>
-            <p class="section-description">以下文件不再参与主界面展示，但会继续保留在库中，便于后续回退、核对和追溯。</p>
+            <h3>隐藏类型与低频资料</h3>
+            <p class="section-description">以下内容继续保留在仓内，但不会与当前有效底稿和历史主版本抢主视觉。</p>
         </div>
     </div>
     <details class="meta-drawer" {% if access_role == 'admin' %}open{% endif %}>
         <summary>查看每日简报等保留资产（{{ library_view.briefs | length }}）</summary>
         <div class="history-list soft-hidden-list">
             {% for item in library_view.briefs %}
-                {{ file_card(item) }}
+                {{ file_card(item, true) }}
             {% else %}
-                <div class="empty-panel"><p>当前没有需要保留的隐藏资产。</p></div>
+                <div class="empty-panel">
+                    <p>当前没有需要保留的低频资料。</p>
+                </div>
             {% endfor %}
         </div>
     </details>

@@ -1,24 +1,46 @@
 {% extends "base.html" %}
 
+{% set success_count = upload_results | selectattr('success') | list | length %}
+{% set failed_count = upload_results | rejectattr('success') | list | length %}
+
 {% block content %}
-<section class="page-card upload-page">
-    <div class="section-header">
+<section class="hero-card upload-page upload-hero-panel">
+    <div class="hero-head">
         <div>
-            <p class="section-kicker">上传中心</p>
-            <h3>上传研究底稿并更新当前有效视图</h3>
-            <p class="section-description">当前主流程以研究底稿为核心。简报能力仍然保留，但已退出主展示链，上传后只会作为保留资产进入文件库。</p>
+            <p class="section-kicker">资料更新入口</p>
+            <h3>把新的底稿放进资料仓，并更新当前有效视图</h3>
+            <p class="hero-subtitle">上传动作现在被定义为资料更新流程的一步：选择文件、自动校验、写入资料仓、刷新首页与板块阅读结果。</p>
         </div>
     </div>
 
-    <div class="upload-layout">
-        <div class="reading-note upload-note">
-            <p>支持格式：.docx / .md / .txt / .pdf。单个文件大小上限 {{ max_upload_size_mb }}MB。超出上限、格式不支持、解析失败或未完成管理验证时，系统都会明确提示。</p>
-        </div>
-        <div class="meta-box upload-tip-card">
-            <span class="meta-label">当前建议流程</span>
+    <div class="upload-intro-grid">
+        <article class="meta-box upload-tip-card">
+            <span class="meta-label">推荐流程</span>
             <strong>优先上传研究底稿</strong>
-            <p>底稿会刷新首页、板块详情页、历史视图和 PDF 导出。每日简报如继续上传，只保留在文件库的隐藏资产区，用于回退和追溯。</p>
+            <p>底稿会刷新首页、板块详情页、历史视图与当前 PDF 导出。每日简报如继续上传，会保留在文件库中，但不再进入首页主视觉。</p>
+        </article>
+        <article class="meta-box upload-tip-card">
+            <span class="meta-label">上传规则</span>
+            <strong>支持 .docx / .md / .txt / .pdf</strong>
+            <p>单个文件大小上限 {{ max_upload_size_mb }}MB。超过上限、格式不支持、解析失败或未完成管理验证时，系统都会给出明确反馈。</p>
+        </article>
+    </div>
+</section>
+
+<section class="page-card upload-form-stage">
+    <div class="section-header">
+        <div>
+            <p class="section-kicker">开始更新</p>
+            <h3>选择资料并提交</h3>
+            <p class="section-description">把底稿拖进来或点击选择文件即可。归档日期会优先读取文件名中的日期，没有日期时默认使用上传当天。</p>
         </div>
+    </div>
+
+    <div class="upload-flow-strip">
+        <span class="meta-chip">1 选择文件</span>
+        <span class="meta-chip">2 自动校验</span>
+        <span class="meta-chip">3 写入资料仓</span>
+        <span class="meta-chip">4 刷新当前视图</span>
     </div>
 
     <form class="upload-form" method="post" enctype="multipart/form-data">
@@ -26,8 +48,8 @@
         <label class="dropzone" for="files">
             <input id="files" type="file" name="files" multiple accept=".docx,.md,.txt,.pdf">
             <span class="dropzone-title">拖拽文件到这里，或点击选择文件</span>
-            <span class="dropzone-note">研究底稿常见名称包含“沉香行业情报研究底稿”；每日简报如继续上传，会被识别为保留资产，不再进入首页主视觉。</span>
-            <span class="dropzone-note">文件名中的日期会优先作为归档日期；没有日期时默认使用上传当天。</span>
+            <span class="dropzone-note">研究底稿常见名称包含“沉香行业情报研究底稿”；如果继续上传每日简报，系统会把它识别为保留资产，不再进入首页主视觉。</span>
+            <span class="dropzone-note">上传后系统会自动判断归档日期、文档类型、历史写入情况与当前版本是否需要更新。</span>
         </label>
         <div class="selected-files" data-selected-files>尚未选择文件</div>
         <div class="form-actions">
@@ -37,32 +59,49 @@
 </section>
 
 {% if upload_results %}
-<section class="page-card">
+<section class="page-card upload-feedback-stage">
     <div class="section-header">
         <div>
             <p class="section-kicker">处理反馈</p>
-            <h3>本次上传结果</h3>
+            <h3>本次资料更新结果</h3>
+            <p class="section-description">系统已经完成识别、校验和入库处理。下面的结果会告诉你哪些文件成功进入资料仓，哪些还需要继续修正。</p>
         </div>
+    </div>
+
+    <div class="overview-strip upload-feedback-summary">
+        <article class="overview-tile">
+            <span>提交文件</span>
+            <strong>{{ upload_results | length }}</strong>
+        </article>
+        <article class="overview-tile">
+            <span>处理成功</span>
+            <strong>{{ success_count }}</strong>
+        </article>
+        <article class="overview-tile">
+            <span>处理失败</span>
+            <strong>{{ failed_count }}</strong>
+        </article>
     </div>
 
     <div class="result-list">
         {% for result in upload_results %}
             <article class="result-card {% if result.success %}success{% else %}failed{% endif %}">
                 <div class="result-head">
-                    <h4>{{ result.original_name }}</h4>
+                    <div>
+                        <h4>{{ result.original_name }}</h4>
+                        <p class="card-note">{{ result.message }}</p>
+                    </div>
                     <span class="status-pill {{ 'tag-update' if result.success else 'tag-empty' }}">{{ '处理成功' if result.success else '处理失败' }}</span>
                 </div>
-                <p>{{ result.message }}</p>
                 <div class="result-meta">
-                    <span>识别类型：{{ result.document_type_label }}</span>
-                    <span>归档日期：{{ result.report_date or '未识别' }}</span>
-                    <span>识别说明：{{ result.recognition_note or '无' }}</span>
-                    <span>写入历史：{{ '是' if result.wrote_history else '否' }}</span>
-                    <span>是否新日期：{{ '是' if result.is_new_day else '否' }}</span>
-                    <span>是否覆盖旧版本：{{ '是' if result.updated_current_version else '否' }}</span>
+                    <span class="meta-chip">识别类型 {{ result.document_type_label }}</span>
+                    <span class="meta-chip soft">归档日期 {{ result.report_date or '未识别' }}</span>
+                    <span class="meta-chip soft">历史写入 {{ '已写入' if result.wrote_history else '未写入' }}</span>
+                    <span class="meta-chip soft">新日期 {{ '是' if result.is_new_day else '否' }}</span>
+                    <span class="meta-chip soft">刷新当前版本 {{ '是' if result.updated_current_version else '否' }}</span>
                 </div>
                 {% if result.validation_errors %}
-                    <div class="reading-note upload-feedback-block">
+                    <div class="reading-note upload-feedback-block is-error">
                         <strong>结构验证失败项</strong>
                         <ul>
                             {% for item in result.validation_errors %}
@@ -72,7 +111,7 @@
                     </div>
                 {% endif %}
                 {% if result.validation_warnings %}
-                    <div class="reading-note upload-feedback-block">
+                    <div class="reading-note upload-feedback-block is-warning">
                         <strong>验证提醒</strong>
                         <ul>
                             {% for item in result.validation_warnings %}
@@ -100,11 +139,12 @@
 </section>
 {% endif %}
 
-<section class="page-card">
+<section class="page-card upload-history-stage">
     <div class="section-header">
         <div>
             <p class="section-kicker">最近归档</p>
             <h3>最近几天的可查看记录</h3>
+            <p class="section-description">如果你想快速确认更新是否已经进入工作台，可以直接打开最近日期页继续查看。</p>
         </div>
     </div>
 

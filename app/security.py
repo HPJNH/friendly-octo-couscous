@@ -23,6 +23,7 @@ AUDIT_ACTION_LABELS = {
     "access_identity.disable": "停用访问资格",
     "access_identity.activate": "重新启用访问资格",
     "access_identity.delete": "删除访问资格",
+    "access_identity.change_code": "修改访问码",
     "document.upload": "上传文件",
     "document.withdraw": "撤回文件",
     "document.activate": "设为当前版本",

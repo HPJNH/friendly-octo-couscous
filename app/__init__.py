@@ -5,7 +5,7 @@ from pathlib import Path
 
 from flask import Flask
 
-from .admin_auth import ensure_bootstrap_access_codes
+from .admin_auth import ensure_access_code_history, ensure_bootstrap_access_codes
 from .constants import SUPPORTED_EXTENSIONS
 from .db import init_db
 from .routes import bp
@@ -66,9 +66,13 @@ def create_app() -> Flask:
     app = Flask(__name__, instance_relative_config=False)
     app.config.update(
         PROJECT_NAME="沉香行业情报浏览系统_1.0",
+        BRAND_NAME=get_setting("BRAND_NAME", settings, "闻脉台"),
+        PRODUCT_SUBTITLE=get_setting("PRODUCT_SUBTITLE", settings, "沉香行业情报工作台"),
+        BRAND_SLOGAN=get_setting("BRAND_SLOGAN", settings, "看见信息，更看见脉络"),
         SECRET_KEY=get_setting("SECRET_KEY", settings, "agarwood-intelligence-local-browser"),
         ADMIN_PASSWORD=get_setting("ADMIN_PASSWORD", settings, "123456"),
         ADMIN_PASSWORD_HASH=get_setting("ADMIN_PASSWORD_HASH", settings, ""),
+        BOOTSTRAP_ADMIN_ENABLED=get_bool_setting("BOOTSTRAP_ADMIN_ENABLED", settings, False),
         ACCESS_CONTROL_ENABLED=get_bool_setting("ACCESS_CONTROL_ENABLED", settings, True),
         ADMIN_SESSION_SECONDS=admin_session_minutes * 60,
         ACCESS_SESSION_SECONDS=access_session_minutes * 60,
@@ -168,5 +172,6 @@ def create_app() -> Flask:
     app.register_blueprint(bp)
     with app.app_context():
         ensure_bootstrap_access_codes()
+        ensure_access_code_history()
         upgrade_existing_documents()
     return app

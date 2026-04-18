@@ -1725,6 +1725,7 @@ def entry_to_card(row: dict) -> dict:
         last_seen=row.get("last_seen_date") or row.get("report_date") or None,
         confidence_level=row.get("confidence_level") or None,
         needs_review=bool(row.get("needs_review")),
+        entry_id=row["id"],
         compare_meta={
             "title": row["title"],
             "time": row.get("time_text", ""),

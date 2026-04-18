@@ -1,33 +1,47 @@
 {% extends "base.html" %}
 
+{% set sections_with_content = debug_view.sections | selectattr('has_effective_content') | list | length %}
+
 {% block content %}
-<section class="page-card debug-hero">
-    <div class="section-header">
+<section class="hero-card debug-stage-hero">
+    <div class="hero-head">
         <div>
-            <p class="section-kicker">解析调试页</p>
-            <h3>{{ debug_view.report_date }} 一级 section 边界检查</h3>
-            <p class="hero-subtitle">这里用于核对正式板块切分是否准确，以及页面是否绑定到了正确的 section。该页面仅管理员可见，默认弱化内部路径展示，先看边界和正文预览。</p>
+            <p class="section-kicker">内部调试页</p>
+            <h3>{{ debug_view.report_date }} 的 section 解析检查台</h3>
+            <p class="hero-subtitle">这个页面仍然服务于解析核对，但会先把真正需要判断的边界、命中标题和正文预览放在前面，避免它继续像一块脱节的旧后台页。</p>
         </div>
-        <div class="debug-hero-actions">
-            <a class="ghost-button" href="{{ url_for('main.day', report_date=debug_view.report_date) }}">返回当日首页</a>
+        <div class="hero-meta">
+            <span class="info-chip">有正文 {{ sections_with_content }}</span>
+            <span class="info-chip muted">总板块 {{ debug_view.sections | length }}</span>
         </div>
     </div>
-    <div class="debug-meta-grid">
-        <div class="drawer-item">
-            <span class="meta-label">底稿文件</span>
+
+    <div class="overview-strip debug-summary-strip">
+        <article class="overview-tile">
+            <span>调试日期</span>
+            <strong>{{ debug_view.report_date }}</strong>
+        </article>
+        <article class="overview-tile">
+            <span>底稿文件</span>
             <strong>{{ debug_view.original_name }}</strong>
-            <p>用于定位当前调试对象。</p>
-        </div>
-        <div class="drawer-item">
-            <span class="meta-label">解析归档</span>
-            <strong>{{ debug_view.document_title }}</strong>
-            <p>优先核对 section 边界、命中标题和正文预览，不必先看物理路径。</p>
-        </div>
+        </article>
+        <article class="overview-tile">
+            <span>识别到正文</span>
+            <strong>{{ sections_with_content }}</strong>
+        </article>
+        <article class="overview-tile">
+            <span>总 section</span>
+            <strong>{{ debug_view.sections | length }}</strong>
+        </article>
+    </div>
+
+    <div class="detail-actions detail-actions-muted">
+        <a class="ghost-button" href="{{ url_for('main.day', report_date=debug_view.report_date) }}">返回当日工作台</a>
     </div>
 </section>
 
 <details class="meta-drawer debug-drawer">
-    <summary>查看内部文件路径</summary>
+    <summary>查看内部文件路径与解析归档位置</summary>
     <div class="drawer-grid">
         <div class="drawer-item">
             <span class="meta-label">底稿文件路径</span>
@@ -40,13 +54,14 @@
     </div>
 </details>
 
-<section class="debug-list">
+<section class="debug-list debug-stage-list">
     {% for item in debug_view.sections %}
         <article class="page-card debug-card">
             <div class="debug-card-head">
                 <div>
                     <p class="section-kicker">Section {{ item.number }}</p>
                     <h3>{{ item.title }}</h3>
+                    <p class="timeline-note">优先核对命中标题、边界序号和前后 300 字预览，再决定是不是解析边界出了问题。</p>
                 </div>
                 <div class="debug-head-meta">
                     <span class="status-pill {{ item.status_class }}">{{ item.status }}</span>
@@ -57,8 +72,8 @@
             <div class="debug-facts">
                 <div><span>slug</span><strong>{{ item.slug }}</strong></div>
                 <div><span>命中标题</span><strong>{{ item.matched_heading or '未命中一级标题' }}</strong></div>
-                <div><span>起始段落序号</span><strong>{{ item.start_paragraph_index if item.start_paragraph_index is not none else '未识别' }}</strong></div>
-                <div><span>结束段落序号</span><strong>{{ item.end_paragraph_index if item.end_paragraph_index is not none else '未识别' }}</strong></div>
+                <div><span>起始段落</span><strong>{{ item.start_paragraph_index if item.start_paragraph_index is not none else '未识别' }}</strong></div>
+                <div><span>结束段落</span><strong>{{ item.end_paragraph_index if item.end_paragraph_index is not none else '未识别' }}</strong></div>
                 <div><span>起始块序号</span><strong>{{ item.start_block_index if item.start_block_index is not none else '未识别' }}</strong></div>
                 <div><span>结束块序号</span><strong>{{ item.end_block_index if item.end_block_index is not none else '未识别' }}</strong></div>
                 <div><span>正文总长度</span><strong>{{ item.content_length }}</strong></div>

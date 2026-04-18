@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ project_name }}</title>
+    <title>{{ brand_name }}｜{{ product_subtitle }}</title>
     <script>
         (function () {
             var storageKey = "agarwood-view-mode";
@@ -24,8 +24,12 @@
         })();
     </script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/collaboration.css') }}">
 </head>
-<body>
+<body
+    class="page-{{ current_page|default('app') }}"
+    data-current-page="{{ current_page|default('app') }}"
+>
     <div class="app-shell">
         {% if access_verified %}
             <button
@@ -50,11 +54,9 @@
             <div class="drawer-shell">
                 <header class="sidebar-header">
                     <div class="sidebar-header-copy">
-                        <p class="brand-kicker">沉香情报</p>
-                        <h1 class="sidebar-title">行业记忆</h1>
-                        <p class="sidebar-mode-text">
-                            当前模式：<strong data-view-mode-menu>桌面版</strong>
-                        </p>
+                        <p class="brand-kicker">{{ brand_name }}</p>
+                        <h1 class="sidebar-title">{{ product_subtitle }}</h1>
+                        <p class="sidebar-mode-text">当前模式：<strong data-view-mode-menu>桌面版</strong></p>
                     </div>
                     <button type="button" class="drawer-close" data-menu-close aria-label="关闭导航菜单">
                         <span aria-hidden="true">&times;</span>
@@ -63,64 +65,48 @@
 
                 <div class="sidebar-scroll" data-menu-scroll>
                     <section class="sidebar-intro">
-                        <p class="brand-kicker">累计有效视图</p>
-                        <h2>{{ project_name }}</h2>
-                        <p class="brand-note">当前主界面只保留累计有效情报、历史留存、版本归档与证据链展示；今日报告主链已下线，抖音监测已转为隐藏回退板块。</p>
+                        <p class="brand-kicker">{{ brand_name }}</p>
+                        <h2>{{ brand_slogan }}</h2>
                     </section>
 
                     <nav class="sidebar-nav">
                         <section class="nav-group">
-                            <p class="nav-group-title">总览入口</p>
-                            <a class="nav-link {% if current_page == 'home' %}active{% endif %}" data-menu-link href="{{ dashboard_link }}">
-                                <span class="nav-link-index">总览</span>
-                                <span class="nav-link-text">今日总览</span>
-                            </a>
-                            <a class="nav-link {% if current_page == 'history' %}active{% endif %}" data-menu-link href="{{ url_for('main.history') }}">
-                                <span class="nav-link-index">历史</span>
-                                <span class="nav-link-text">历史记录</span>
-                            </a>
-                            <a class="nav-link {% if current_page == 'library' %}active{% endif %}" data-menu-link href="{{ url_for('main.library') }}">
-                                <span class="nav-link-index">文件</span>
-                                <span class="nav-link-text">文件库</span>
-                            </a>
+                            <p class="nav-group-title">主入口</p>
+                            {% for item in sidebar_primary_links %}
+                                <a
+                                    class="nav-link {% if (current_page == 'home' and item.key == 'today_focus') or (item.key == 'history_archive' and current_page == 'history') %}active{% endif %}"
+                                    data-menu-link
+                                    data-nav-group="primary"
+                                    data-nav-key="{{ item.key }}"
+                                    {% if (current_page == 'home' and item.key == 'today_focus') or (item.key == 'history_archive' and current_page == 'history') %}aria-current="page"{% endif %}
+                                    href="{{ item.href }}"
+                                >
+                                    <span class="nav-link-index">{{ loop.index }}</span>
+                                    <span class="nav-link-text">{{ item.title }}</span>
+                                </a>
+                            {% endfor %}
                         </section>
 
-                        {% for group in sidebar_section_groups %}
-                            <section class="nav-group">
-                                <p class="nav-group-title">{{ group.title }}</p>
-                                <p class="nav-group-caption">{{ group.description }}</p>
-                                {% for item in group["items"] %}
-                                    {% if item.link %}
-                                        <a
-                                            class="nav-link {% if current_page == 'section' and detail and detail.section_key == item.key %}active{% endif %}"
-                                            data-menu-link
-                                            href="{{ item.link }}"
-                                        >
-                                            <span class="nav-link-index">{{ "%02d"|format(item.number) }}</span>
-                                            <span class="nav-link-text">{{ item.title }}</span>
-                                        </a>
-                                    {% else %}
-                                        <span class="nav-link disabled">
-                                            <span class="nav-link-index">{{ "%02d"|format(item.number) }}</span>
-                                            <span class="nav-link-text">{{ item.title }}</span>
-                                        </span>
-                                    {% endif %}
-                                {% endfor %}
-                            </section>
-                        {% endfor %}
+                        <section class="nav-group nav-group-reading">
+                            <p class="nav-group-title">阅读主题</p>
+                            {% for item in sidebar_reading_links %}
+                                <a
+                                    class="nav-link {% if current_page == 'section' and detail and detail.category_key == item.key %}active{% endif %}"
+                                    data-menu-link
+                                    href="{{ item.href }}"
+                                >
+                                    <span class="nav-link-index">{{ loop.index }}</span>
+                                    <span class="nav-link-text">{{ item.title }}</span>
+                                </a>
+                            {% endfor %}
+                        </section>
 
-                        <section class="nav-group">
-                            <p class="nav-group-title">管理入口</p>
-                            {% if access_role == 'admin' %}
-                                <a class="nav-link {% if current_page == 'upload' %}active{% endif %}" data-menu-link href="{{ url_for('main.upload') }}">
-                                    <span class="nav-link-index">上传</span>
-                                    <span class="nav-link-text">上传文件</span>
-                                </a>
-                                <a class="nav-link {% if current_page == 'access_manage' %}active{% endif %}" data-menu-link href="{{ url_for('main.access_manage') }}">
-                                    <span class="nav-link-index">权限</span>
-                                    <span class="nav-link-text">访问资格管理</span>
-                                </a>
-                            {% endif %}
+                        <section class="nav-group nav-group-secondary">
+                            <p class="nav-group-title">低频入口</p>
+                            <a class="nav-link {% if current_page == 'section' and detail and detail.section_key == 'report_note' %}active{% endif %}" data-menu-link href="{{ reading_note_link }}">
+                                <span class="nav-link-index">注</span>
+                                <span class="nav-link-text">阅读说明</span>
+                            </a>
                         </section>
                     </nav>
                 </div>
@@ -153,12 +139,12 @@
                         <summary class="sidebar-fold-summary">
                             <div class="sidebar-tool-header">
                                 <div>
-                                    <p class="nav-group-title">管理操作</p>
-                                    <p class="sidebar-fold-note">上传、版本切换与访问资格管理</p>
+                                    <p class="nav-group-title">工具与管理</p>
+                                    <p class="sidebar-fold-note">上传、导出与访问资格管理</p>
                                 </div>
                                 <div class="sidebar-fold-meta">
                                     <span class="mode-mini {% if admin_verified %}is-active{% endif %}">
-                                        {{ "管理员" if admin_verified else "仅浏览" }}
+                                        {{ "已验证" if admin_verified else "未验证" }}
                                     </span>
                                     <span class="fold-chevron" aria-hidden="true"></span>
                                 </div>
@@ -166,14 +152,25 @@
                         </summary>
                         <div class="sidebar-fold-panel">
                             <p class="sidebar-tool-note">
-                                当前登录：{{ access_label }}{% if access_role != 'guest' %} / {{ access_role }}{% endif %}
+                                当前身份：{{ access_label }}{% if access_role != 'guest' %} / {{ access_role }}{% endif %}
                             </p>
                             <div class="sidebar-utility-stack">
+                                <a class="ghost-button small full-width" href="{{ url_for('main.library') }}">进入文件库</a>
+                                <a class="ghost-button small full-width" href="{{ url_for('main.history') }}">查看历史变化</a>
+                                {% if can_change_access_code %}
+                                    <a class="ghost-button small full-width" href="{{ url_for('main.access_change_code') }}">修改我的访问码</a>
+                                {% endif %}
+                                {% if export_link %}
+                                    <a class="ghost-button small full-width" href="{{ export_link }}?next={{ request.path }}">导出当前 PDF</a>
+                                {% endif %}
                                 {% if admin_verified %}
-                                    <a class="ghost-button small full-width" href="{{ url_for('main.upload') }}">上传新文件</a>
+                                    <a class="ghost-button small full-width" href="{{ url_for('main.upload') }}">上传新底稿</a>
                                     <a class="ghost-button small full-width" href="{{ url_for('main.access_manage') }}">管理访问资格</a>
                                 {% else %}
                                     <a class="ghost-button small full-width" href="{{ url_for('main.admin_verify', next=request.path) }}">切换为管理员</a>
+                                {% endif %}
+                                {% if debug_link and access_role == 'admin' %}
+                                    <a class="ghost-button small full-width" href="{{ debug_link }}">解析调试</a>
                                 {% endif %}
                                 <form method="post" action="{{ url_for('main.access_logout') }}">
                                     {{ csrf_input() }}
@@ -187,36 +184,83 @@
         </aside>
 
         <main class="main-panel">
-            <header class="topbar">
-                <div class="topbar-main">
-                    <div class="topbar-copy">
-                        <p class="topbar-kicker">累计有效情报视图</p>
-                        <h2>{{ nav_date or latest_date or '尚未生成日页面' }}</h2>
-                        <p class="topbar-summary">当前页面聚焦可见板块、历史累计和证据链。今日报告主链与抖音监测入口已从主 UI 软移除。</p>
+            {% if current_page == 'home' %}
+                <header class="topbar topbar-home">
+                    <div class="topbar-main topbar-home-main">
+                        <div class="topbar-copy topbar-home-copy quiet-brand">
+                            <p class="topbar-kicker">{{ brand_name }}</p>
+                            <p class="topbar-summary">{{ brand_slogan }}</p>
+                        </div>
+                        <div class="topbar-mode topbar-mode-compact">
+                            <span class="topbar-mode-label">当前模式</span>
+                            <strong data-view-mode-label>桌面版</strong>
+                        </div>
                     </div>
-                    <div class="topbar-mode">
-                        <span class="topbar-mode-label">当前模式</span>
-                        <strong data-view-mode-label>桌面版</strong>
+                </header>
+            {% elif current_page in ['access', 'admin'] %}
+                <header class="topbar topbar-auth-shell">
+                    <div class="topbar-main topbar-auth-main">
+                        <div class="topbar-copy topbar-auth-copy">
+                            <p class="topbar-kicker">{{ '管理验证入口' if current_page == 'admin' else '内部访问入口' }}</p>
+                            <h2>{{ brand_name }}</h2>
+                            <p class="topbar-summary">
+                                {{ '先完成管理员验证，再继续执行上传、撤回、激活和访问资格管理。' if current_page == 'admin' else '请先完成访问验证，再进入首页工作台、文件库和历史轨迹。' }}
+                            </p>
+                        </div>
+                        <div class="topbar-mode topbar-mode-compact">
+                            <span class="topbar-mode-label">当前模式</span>
+                            <strong data-view-mode-label>桌面版</strong>
+                        </div>
                     </div>
-                </div>
-                <div class="topbar-actions">
-                    <span class="meta-chip">{{ access_label }}</span>
-                    <span class="meta-chip soft">{{ "管理权限已验证" if admin_verified else "当前仅浏览" }}</span>
-                    {% if export_link %}
-                        <a class="ghost-button" href="{{ export_link }}?next={{ request.path }}">导出当前 PDF</a>
-                    {% endif %}
-                    {% if debug_link and access_role == 'admin' %}
-                        <a class="ghost-button" href="{{ debug_link }}">解析调试</a>
-                    {% endif %}
-                    <a class="ghost-button" href="{{ url_for('main.library') }}">文件库</a>
-                    <a class="ghost-button" href="{{ url_for('main.history') }}">历史记录</a>
-                    {% if access_role == 'admin' %}
-                        <a class="primary-button" href="{{ url_for('main.upload') }}">上传新文件</a>
-                    {% else %}
-                        <a class="primary-button" href="{{ url_for('main.admin_verify', next=url_for('main.upload')) }}">切换管理权限</a>
-                    {% endif %}
-                </div>
-            </header>
+                </header>
+            {% else %}
+                <header class="topbar">
+                    <div class="topbar-main">
+                        <div class="topbar-copy">
+                            <p class="topbar-kicker">累计有效情报视图</p>
+                            <h2>{{ nav_date or latest_date or '尚未生成日页面' }}</h2>
+                            <p class="topbar-summary">当前页面聚焦资料浏览、版本留存与阅读判断。</p>
+                        </div>
+                        <div class="topbar-mode">
+                            <span class="topbar-mode-label">当前模式</span>
+                            <strong data-view-mode-label>桌面版</strong>
+                        </div>
+                    </div>
+                    <div class="topbar-utility">
+                        <div class="topbar-support">
+                            <span class="meta-chip">{{ access_label }}</span>
+                        </div>
+                        <div class="topbar-actions">
+                            <a class="ghost-button" href="{{ url_for('main.library') }}">文件库</a>
+                            <a class="ghost-button" href="{{ url_for('main.history') }}">历史记录</a>
+                            {% if access_role == 'admin' %}
+                                <a class="primary-button" href="{{ url_for('main.upload') }}">上传新底稿</a>
+                            {% else %}
+                                <a class="primary-button" href="{{ url_for('main.admin_verify', next=url_for('main.upload')) }}">切换管理权限</a>
+                            {% endif %}
+                            <details class="topbar-tools-drawer">
+                                <summary>更多工具</summary>
+                                <div class="topbar-tools-panel">
+                                    {% if export_link %}
+                                        <a class="ghost-button small" href="{{ export_link }}?next={{ request.path }}">导出当前 PDF</a>
+                                    {% endif %}
+                                    {% if can_change_access_code %}
+                                        <a class="ghost-button small" href="{{ url_for('main.access_change_code') }}">修改我的访问码</a>
+                                    {% endif %}
+                                    {% if admin_verified %}
+                                        <a class="ghost-button small" href="{{ url_for('main.access_manage') }}">访问资格管理</a>
+                                    {% else %}
+                                        <a class="ghost-button small" href="{{ url_for('main.admin_verify', next=request.path) }}">验证管理权限</a>
+                                    {% endif %}
+                                    {% if debug_link and access_role == 'admin' %}
+                                        <a class="ghost-button small" href="{{ debug_link }}">解析调试</a>
+                                    {% endif %}
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+                </header>
+            {% endif %}
 
             {% with messages = get_flashed_messages(with_categories=true) %}
                 {% if messages %}
@@ -255,5 +299,6 @@
     </div>
 
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/marks.js') }}"></script>
 </body>
 </html>

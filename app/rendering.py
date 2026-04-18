@@ -527,6 +527,7 @@ def build_card(
     confidence_level: str | None = None,
     needs_review: bool = False,
     compare_meta: dict[str, Any] | None = None,
+    entry_id: int | None = None,
 ) -> dict[str, Any]:
     clean_title = text_or_empty(title)
     clean_core_content = text_or_empty(core_content)
@@ -548,6 +549,7 @@ def build_card(
         "status": status,
         "status_class": STATUS_CLASS_MAP.get(status, ""),
         "compare_meta": compare_meta or {},
+        "entry_id": entry_id,
     }
     return normalize_card_evidence(card)
 
