@@ -185,6 +185,7 @@ CREATE TABLE IF NOT EXISTS access_code_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     identity_id INTEGER,
     code_hash TEXT NOT NULL UNIQUE,
+    secret_hash TEXT,
     code_hint TEXT NOT NULL,
     is_current INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -300,6 +301,7 @@ def init_db(database_path: Path) -> None:
         ensure_column(connection, "access_identities", "updated_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(connection, "access_identities", "last_used_at", "TEXT")
         ensure_column(connection, "access_identities", "secret_hash", "TEXT")
+        ensure_column(connection, "access_code_history", "secret_hash", "TEXT")
         connection.execute(
             """
             UPDATE entry_marks

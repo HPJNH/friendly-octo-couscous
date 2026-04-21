@@ -24,6 +24,7 @@ config/local_settings.json
 # Runtime data and evidence files
 data/database/*.db
 data/database/*.sqlite*
+data/database/backups/**
 data/processed/archive_parsed/**/*.json
 data/raw/**/*.docx
 data/raw/**/*.pdf

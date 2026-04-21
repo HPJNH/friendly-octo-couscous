@@ -91,6 +91,46 @@ def _code_fingerprint_exists(connection, fingerprint: str, exclude_identity_id: 
     return current_exists is not None
 
 
+def _access_code_secret_exists(connection, secret: str, exclude_identity_id: int | None = None) -> bool:
+    normalized_secret = _normalize_access_code(secret)
+    if not normalized_secret:
+        return False
+
+    current_fingerprint = _fingerprint_secret(normalized_secret)
+    if _code_fingerprint_exists(connection, current_fingerprint, exclude_identity_id=exclude_identity_id):
+        return True
+
+    params: list[object] = []
+    current_query = """
+        SELECT secret_hash
+        FROM access_identities
+        WHERE COALESCE(secret_hash, '') != ''
+    """
+    if exclude_identity_id is not None:
+        current_query += " AND id != ?"
+        params.append(exclude_identity_id)
+    current_rows = connection.execute(current_query, tuple(params)).fetchall()
+    for row in current_rows:
+        if check_password_hash(row["secret_hash"], normalized_secret):
+            return True
+
+    history_params: list[object] = []
+    history_query = """
+        SELECT secret_hash
+        FROM access_code_history
+        WHERE COALESCE(secret_hash, '') != ''
+    """
+    if exclude_identity_id is not None:
+        history_query += " AND COALESCE(identity_id, 0) != ?"
+        history_params.append(exclude_identity_id)
+    history_rows = connection.execute(history_query, tuple(history_params)).fetchall()
+    for row in history_rows:
+        if check_password_hash(row["secret_hash"], normalized_secret):
+            return True
+
+    return False
+
+
 def _retire_access_code_history(connection, identity_id: int, retired_at: str) -> None:
     connection.execute(
         """
@@ -109,6 +149,7 @@ def _record_access_code_history(
     *,
     identity_id: int | None,
     fingerprint: str,
+    secret_hash: str,
     code_hint: str,
     created_at: str,
     is_current: bool,
@@ -119,24 +160,26 @@ def _record_access_code_history(
         INSERT OR IGNORE INTO access_code_history (
             identity_id,
             code_hash,
+            secret_hash,
             code_hint,
             is_current,
             created_at,
             retired_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (identity_id, fingerprint, code_hint, 1 if is_current else 0, created_at, retired_at),
+        (identity_id, fingerprint, secret_hash, code_hint, 1 if is_current else 0, created_at, retired_at),
     )
     connection.execute(
         """
         UPDATE access_code_history
         SET identity_id = COALESCE(identity_id, ?),
+            secret_hash = COALESCE(NULLIF(secret_hash, ''), ?),
             code_hint = ?,
             is_current = ?,
             retired_at = ?
         WHERE code_hash = ?
         """,
-        (identity_id, code_hint, 1 if is_current else 0, None if is_current else retired_at, fingerprint),
+        (identity_id, secret_hash, code_hint, 1 if is_current else 0, None if is_current else retired_at, fingerprint),
     )
 
 
@@ -154,7 +197,7 @@ def ensure_access_code_history() -> None:
     with get_connection(database_path) as connection:
         current_rows = connection.execute(
             """
-            SELECT id, code_hash, code_hint, created_at, updated_at, status
+            SELECT id, code_hash, secret_hash, code_hint, created_at, updated_at, status
             FROM access_identities
             """
         ).fetchall()
@@ -165,6 +208,7 @@ def ensure_access_code_history() -> None:
                 connection,
                 identity_id=row["id"],
                 fingerprint=row["code_hash"],
+                secret_hash=row["secret_hash"] or "",
                 code_hint=row["code_hint"] or "",
                 created_at=row["created_at"] or now,
                 is_current=is_current,
@@ -189,15 +233,17 @@ def ensure_access_code_history() -> None:
                     INSERT OR IGNORE INTO access_code_history (
                         identity_id,
                         code_hash,
+                        secret_hash,
                         code_hint,
                         is_current,
                         created_at,
                         retired_at
-                    ) VALUES (?, ?, ?, 0, ?, ?)
+                    ) VALUES (?, ?, ?, ?, 0, ?, ?)
                     """,
                     (
                         None,
                         fingerprint,
+                        "",
                         str(item.get("code_hint") or ""),
                         str(item.get("created_at") or now),
                         str(item.get("updated_at") or now),
@@ -214,6 +260,76 @@ def _identity_matches_secret(row, secret: str) -> bool:
     if secret_hash:
         return check_password_hash(secret_hash, normalized_secret)
     return hmac.compare_digest(row["code_hash"], _fingerprint_secret(normalized_secret))
+
+
+def _find_active_identity_by_secret(connection, secret: str):
+    normalized_secret = _normalize_access_code(secret)
+    if not normalized_secret:
+        return None
+
+    fingerprint = _fingerprint_secret(normalized_secret)
+    exact_rows = connection.execute(
+        """
+        SELECT *
+        FROM access_identities
+        WHERE status = 'active'
+          AND code_hash = ?
+        ORDER BY updated_at DESC, id DESC
+        """,
+        (fingerprint,),
+    ).fetchall()
+    seen_ids = {row["id"] for row in exact_rows}
+    for row in exact_rows:
+        if _identity_matches_secret(row, normalized_secret):
+            return row
+
+    fallback_rows = connection.execute(
+        """
+        SELECT *
+        FROM access_identities
+        WHERE status = 'active'
+        ORDER BY updated_at DESC, id DESC
+        """
+    ).fetchall()
+    for row in fallback_rows:
+        if row["id"] in seen_ids:
+            continue
+        if _identity_matches_secret(row, normalized_secret):
+            return row
+    return None
+
+
+def _sync_identity_secret_material(connection, row, secret: str) -> None:
+    normalized_secret = _normalize_access_code(secret)
+    if not normalized_secret:
+        return
+
+    fingerprint = _fingerprint_secret(normalized_secret)
+    now = now_string()
+    secret_hash = row["secret_hash"] or ""
+    if not secret_hash:
+        secret_hash = generate_password_hash(normalized_secret)
+
+    connection.execute(
+        """
+        UPDATE access_identities
+        SET code_hash = ?,
+            secret_hash = ?,
+            last_used_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (fingerprint, secret_hash, now, now, row["id"]),
+    )
+    _record_access_code_history(
+        connection,
+        identity_id=row["id"],
+        fingerprint=fingerprint,
+        secret_hash=secret_hash,
+        code_hint=row["code_hint"] or _code_hint(normalized_secret),
+        created_at=row["created_at"] or now,
+        is_current=True,
+    )
 
 
 def _session_ttl(role: str) -> int:
@@ -342,7 +458,9 @@ def ensure_bootstrap_access_codes() -> None:
             ("默认查看访问码", current_app.config.get("INITIAL_VIEWER_ACCESS_CODE", "viewer-123456"), "viewer", "首次启动自动生成"),
         ]
         for label, raw_code, role, notes in seed_rows:
-            connection.execute(
+            fingerprint = _fingerprint_secret(raw_code)
+            secret_hash = generate_password_hash(raw_code)
+            identity_id = connection.execute(
                 """
                 INSERT INTO access_identities (
                     label, code_hash, secret_hash, code_hint, role, status, notes, created_at, updated_at
@@ -350,14 +468,23 @@ def ensure_bootstrap_access_codes() -> None:
                 """,
                 (
                     label,
-                    _fingerprint_secret(raw_code),
-                    generate_password_hash(raw_code),
+                    fingerprint,
+                    secret_hash,
                     _code_hint(raw_code),
                     role,
                     notes,
                     now,
                     now,
                 ),
+            ).lastrowid
+            _record_access_code_history(
+                connection,
+                identity_id=identity_id,
+                fingerprint=fingerprint,
+                secret_hash=secret_hash,
+                code_hint=_code_hint(raw_code),
+                created_at=now,
+                is_current=True,
             )
         connection.commit()
 
@@ -380,39 +507,20 @@ def verify_admin_password(password: str) -> bool:
 
 def verify_access_secret(secret: str, required_role: str = "viewer") -> tuple[bool, str]:
     secret = _normalize_access_code(secret)
+    if not secret.isdigit() or len(secret) != ACCESS_CODE_DIGITS:
+        return False, "not-found"
     if verify_admin_password(secret):
         return True, "bootstrap-admin"
 
-    fingerprint = _fingerprint_secret(secret)
     with get_connection(current_app.config["DATABASE_PATH"]) as connection:
-        row = connection.execute(
-            """
-            SELECT *
-            FROM access_identities
-            WHERE code_hash = ?
-              AND status = 'active'
-            LIMIT 1
-            """,
-            (fingerprint,),
-        ).fetchone()
+        row = _find_active_identity_by_secret(connection, secret)
         if not row:
             return False, "not-found"
         if _required_rank(row["role"]) < _required_rank(required_role):
             return False, "role-denied"
-        if not _identity_matches_secret(row, secret):
-            return False, "not-found"
 
         mark_access_verified(identity_id=row["id"], label=row["label"], role=row["role"], method="access-code")
-        connection.execute(
-            """
-            UPDATE access_identities
-            SET secret_hash = COALESCE(secret_hash, ?),
-                last_used_at = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (generate_password_hash(secret or ""), now_string(), now_string(), row["id"]),
-        )
+        _sync_identity_secret_material(connection, row, secret)
         connection.commit()
     return True, "access-code"
 
@@ -502,9 +610,10 @@ def create_access_identity(label: str, raw_code: str, role: str, notes: str = ""
         raise ValueError("请填写访问资格名称。")
 
     fingerprint = _fingerprint_secret(raw_code)
+    secret_hash = generate_password_hash(raw_code)
     now = now_string()
     with get_connection(current_app.config["DATABASE_PATH"]) as connection:
-        if _code_fingerprint_exists(connection, fingerprint):
+        if _access_code_secret_exists(connection, raw_code):
             raise ValueError("这串访问码已经被使用过了，请换一串新的 6 位数字。")
         identity_id = connection.execute(
             """
@@ -515,7 +624,7 @@ def create_access_identity(label: str, raw_code: str, role: str, notes: str = ""
             (
                 label,
                 fingerprint,
-                generate_password_hash(raw_code),
+                secret_hash,
                 _code_hint(raw_code),
                 role,
                 notes,
@@ -527,6 +636,7 @@ def create_access_identity(label: str, raw_code: str, role: str, notes: str = ""
             connection,
             identity_id=identity_id,
             fingerprint=fingerprint,
+            secret_hash=secret_hash,
             code_hint=_code_hint(raw_code),
             created_at=now,
             is_current=True,
@@ -552,6 +662,7 @@ def update_access_identity_status(identity_id: int, status: str) -> dict:
                 connection,
                 identity_id=identity_id,
                 fingerprint=row["code_hash"],
+                secret_hash=row["secret_hash"] or "",
                 code_hint=row["code_hint"] or "",
                 created_at=row["created_at"] or updated_at,
                 is_current=True,
@@ -579,10 +690,11 @@ def change_access_identity_code(identity_id: int, current_code: str, new_code: s
             raise ValueError("当前访问码不正确。")
 
         new_fingerprint = _fingerprint_secret(new_code)
-        if _code_fingerprint_exists(connection, new_fingerprint, exclude_identity_id=identity_id):
+        if _access_code_secret_exists(connection, new_code, exclude_identity_id=identity_id):
             raise ValueError("这串新访问码已经被使用过了，请换一串新的 6 位数字。")
 
         updated_at = now_string()
+        new_secret_hash = generate_password_hash(new_code)
         _retire_access_code_history(connection, identity_id, updated_at)
         connection.execute(
             """
@@ -595,7 +707,7 @@ def change_access_identity_code(identity_id: int, current_code: str, new_code: s
             """,
             (
                 new_fingerprint,
-                generate_password_hash(new_code),
+                new_secret_hash,
                 _code_hint(new_code),
                 updated_at,
                 identity_id,
@@ -605,6 +717,7 @@ def change_access_identity_code(identity_id: int, current_code: str, new_code: s
             connection,
             identity_id=identity_id,
             fingerprint=new_fingerprint,
+            secret_hash=new_secret_hash,
             code_hint=_code_hint(new_code),
             created_at=updated_at,
             is_current=True,
@@ -619,7 +732,6 @@ def generate_access_code(_prefix: str | None = None) -> str:
     with get_connection(current_app.config["DATABASE_PATH"]) as connection:
         while True:
             candidate = f"{secrets.randbelow(1000000):06d}"
-            fingerprint = _fingerprint_secret(candidate)
-            if _code_fingerprint_exists(connection, fingerprint):
+            if _access_code_secret_exists(connection, candidate):
                 continue
             return candidate
