@@ -29,6 +29,8 @@
 <body
     class="page-{{ current_page|default('app') }}"
     data-current-page="{{ current_page|default('app') }}"
+    data-current-section-key="{% if detail is defined and detail %}{{ detail.section_key }}{% endif %}"
+    data-current-reading-key="{% if detail is defined and detail %}{{ detail.category_key }}{% endif %}"
 >
     <div class="app-shell">
         {% if access_verified %}
@@ -55,8 +57,8 @@
                 <header class="sidebar-header">
                     <div class="sidebar-header-copy">
                         <p class="brand-kicker">{{ brand_name }}</p>
-                        <h1 class="sidebar-title">{{ product_subtitle }}</h1>
-                        <p class="sidebar-mode-text">当前模式：<strong data-view-mode-menu>桌面版</strong></p>
+                        <h1 class="sidebar-title">{{ brand_name }}</h1>
+                        <p class="sidebar-mode-text">{{ brand_slogan }}</p>
                     </div>
                     <button type="button" class="drawer-close" data-menu-close aria-label="关闭导航菜单">
                         <span aria-hidden="true">&times;</span>
@@ -64,11 +66,6 @@
                 </header>
 
                 <div class="sidebar-scroll" data-menu-scroll>
-                    <section class="sidebar-intro">
-                        <p class="brand-kicker">{{ brand_name }}</p>
-                        <h2>{{ brand_slogan }}</h2>
-                    </section>
-
                     <nav class="sidebar-nav">
                         <section class="nav-group">
                             <p class="nav-group-title">主入口</p>
@@ -79,7 +76,7 @@
                                     data-nav-group="primary"
                                     data-nav-key="{{ item.key }}"
                                     {% if (current_page == 'home' and item.key == 'today_focus') or (item.key == 'history_archive' and current_page == 'history') %}aria-current="page"{% endif %}
-                                    href="{{ item.href }}"
+                                    href="{{ '#history-archive' if current_page == 'home' and item.key == 'history_archive' else item.href }}"
                                 >
                                     <span class="nav-link-index">{{ loop.index }}</span>
                                     <span class="nav-link-text">{{ item.title }}</span>
@@ -88,11 +85,13 @@
                         </section>
 
                         <section class="nav-group nav-group-reading">
-                            <p class="nav-group-title">阅读主题</p>
+                            <p class="nav-group-title">阅读赛道</p>
                             {% for item in sidebar_reading_links %}
                                 <a
                                     class="nav-link {% if current_page == 'section' and detail and detail.category_key == item.key %}active{% endif %}"
                                     data-menu-link
+                                    data-nav-group="reading"
+                                    data-nav-key="{{ item.key }}"
                                     href="{{ item.href }}"
                                 >
                                     <span class="nav-link-index">{{ loop.index }}</span>
@@ -103,7 +102,13 @@
 
                         <section class="nav-group nav-group-secondary">
                             <p class="nav-group-title">低频入口</p>
-                            <a class="nav-link {% if current_page == 'section' and detail and detail.section_key == 'report_note' %}active{% endif %}" data-menu-link href="{{ reading_note_link }}">
+                            <a
+                                class="nav-link {% if current_page == 'section' and detail and detail.section_key == 'report_note' %}active{% endif %}"
+                                data-menu-link
+                                data-nav-group="secondary"
+                                data-nav-key="reading_note"
+                                href="{{ reading_note_link }}"
+                            >
                                 <span class="nav-link-index">注</span>
                                 <span class="nav-link-text">阅读说明</span>
                             </a>
@@ -112,29 +117,6 @@
                 </div>
 
                 <footer class="sidebar-footer">
-                    <details class="sidebar-fold" data-sidebar-fold="view-mode">
-                        <summary class="sidebar-fold-summary">
-                            <div class="sidebar-tool-header">
-                                <div>
-                                    <p class="nav-group-title">视图模式</p>
-                                    <p class="sidebar-fold-note">切换桌面 / 手机 / 自动适配</p>
-                                </div>
-                                <div class="sidebar-fold-meta">
-                                    <span class="mode-mini" data-view-mode-label>桌面版</span>
-                                    <span class="fold-chevron" aria-hidden="true"></span>
-                                </div>
-                            </div>
-                        </summary>
-                        <div class="sidebar-fold-panel">
-                            <p class="sidebar-tool-note" data-view-mode-note>当前按页面宽度自动适配。</p>
-                            <div class="view-switcher-buttons compact">
-                                <button type="button" class="view-chip" data-view-mode-option="desktop">电脑版</button>
-                                <button type="button" class="view-chip" data-view-mode-option="mobile">手机版</button>
-                                <button type="button" class="view-chip" data-view-mode-option="auto">自动</button>
-                            </div>
-                        </div>
-                    </details>
-
                     <details class="sidebar-fold muted-tools" data-sidebar-fold="admin-tools">
                         <summary class="sidebar-fold-summary">
                             <div class="sidebar-tool-header">
@@ -154,23 +136,32 @@
                             <p class="sidebar-tool-note">
                                 当前身份：{{ access_label }}{% if access_role != 'guest' %} / {{ access_role }}{% endif %}
                             </p>
+                            <div class="sidebar-tool-section">
+                                <p class="nav-group-title">视图模式</p>
+                                <p class="sidebar-tool-note" data-view-mode-note>按当前设备宽度自动适配，也可手动切换。</p>
+                                <div class="view-switcher-buttons compact">
+                                    <button type="button" class="view-chip" data-view-mode-option="desktop">电脑版</button>
+                                    <button type="button" class="view-chip" data-view-mode-option="mobile">手机版</button>
+                                    <button type="button" class="view-chip" data-view-mode-option="auto">自动</button>
+                                </div>
+                            </div>
                             <div class="sidebar-utility-stack">
-                                <a class="ghost-button small full-width" href="{{ url_for('main.library') }}">进入文件库</a>
-                                <a class="ghost-button small full-width" href="{{ url_for('main.history') }}">查看历史变化</a>
+                                <a class="ghost-button small full-width" data-nav-group="bottom" data-nav-key="library" href="{{ url_for('main.library') }}">进入文件库</a>
+                                <a class="ghost-button small full-width" data-nav-group="bottom" data-nav-key="history" href="{{ url_for('main.history') }}">查看历史变化</a>
                                 {% if can_change_access_code %}
-                                    <a class="ghost-button small full-width" href="{{ url_for('main.access_change_code') }}">修改我的访问码</a>
+                                    <a class="ghost-button small full-width" data-nav-group="bottom" data-nav-key="access_change" href="{{ url_for('main.access_change_code') }}">修改我的访问码</a>
                                 {% endif %}
                                 {% if export_link %}
                                     <a class="ghost-button small full-width" href="{{ export_link }}?next={{ request.path }}">导出当前 PDF</a>
                                 {% endif %}
                                 {% if admin_verified %}
-                                    <a class="ghost-button small full-width" href="{{ url_for('main.upload') }}">上传新底稿</a>
-                                    <a class="ghost-button small full-width" href="{{ url_for('main.access_manage') }}">管理访问资格</a>
-                                {% else %}
+                                    <a class="ghost-button small full-width" data-nav-group="bottom" data-nav-key="upload" href="{{ url_for('main.upload') }}">上传新底稿</a>
+                                    <a class="ghost-button small full-width" data-nav-group="bottom" data-nav-key="access_manage" href="{{ url_for('main.access_manage') }}">管理访问资格</a>
+                                {% elif not is_mobile_home %}
                                     <a class="ghost-button small full-width" href="{{ url_for('main.admin_verify', next=request.path) }}">切换为管理员</a>
                                 {% endif %}
                                 {% if debug_link and access_role == 'admin' %}
-                                    <a class="ghost-button small full-width" href="{{ debug_link }}">解析调试</a>
+                                    <a class="ghost-button small full-width" data-nav-group="bottom" data-nav-key="debug" href="{{ debug_link }}">解析调试</a>
                                 {% endif %}
                                 <form method="post" action="{{ url_for('main.access_logout') }}">
                                     {{ csrf_input() }}
@@ -184,20 +175,8 @@
         </aside>
 
         <main class="main-panel">
-            {% if current_page == 'home' %}
-                <header class="topbar topbar-home">
-                    <div class="topbar-main topbar-home-main">
-                        <div class="topbar-copy topbar-home-copy quiet-brand">
-                            <p class="topbar-kicker">{{ brand_name }}</p>
-                            <p class="topbar-summary">{{ brand_slogan }}</p>
-                        </div>
-                        <div class="topbar-mode topbar-mode-compact">
-                            <span class="topbar-mode-label">当前模式</span>
-                            <strong data-view-mode-label>桌面版</strong>
-                        </div>
-                    </div>
-                </header>
-            {% elif current_page in ['access', 'admin'] %}
+            {% set flashed_messages = get_flashed_messages(with_categories=true) %}
+            {% if current_page in ['access', 'admin'] %}
                 <header class="topbar topbar-auth-shell">
                     <div class="topbar-main topbar-auth-main">
                         <div class="topbar-copy topbar-auth-copy">
@@ -206,10 +185,6 @@
                             <p class="topbar-summary">
                                 {{ '先完成管理员验证，再继续执行上传、撤回、激活和访问资格管理。' if current_page == 'admin' else '请先完成访问验证，再进入首页工作台、文件库和历史轨迹。' }}
                             </p>
-                        </div>
-                        <div class="topbar-mode topbar-mode-compact">
-                            <span class="topbar-mode-label">当前模式</span>
-                            <strong data-view-mode-label>桌面版</strong>
                         </div>
                     </div>
                 </header>
@@ -221,11 +196,8 @@
                             <h2>{{ nav_date or latest_date or '尚未生成日页面' }}</h2>
                             <p class="topbar-summary">当前页面聚焦资料浏览、版本留存与阅读判断。</p>
                         </div>
-                        <div class="topbar-mode">
-                            <span class="topbar-mode-label">当前模式</span>
-                            <strong data-view-mode-label>桌面版</strong>
-                        </div>
                     </div>
+                    {% if not is_mobile_home %}
                     <div class="topbar-utility">
                         <div class="topbar-support">
                             <span class="meta-chip">{{ access_label }}</span>
@@ -259,13 +231,13 @@
                             </details>
                         </div>
                     </div>
+                    {% endif %}
                 </header>
             {% endif %}
 
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
+            {% if flashed_messages and not is_mobile_home %}
                     <section class="flash-stack">
-                        {% for category, message in messages %}
+                        {% for category, message in flashed_messages %}
                             {% if message is mapping %}
                                 <article class="flash-card flash-{{ category }}">
                                     <div class="flash-copy">
@@ -291,10 +263,39 @@
                             {% endif %}
                         {% endfor %}
                     </section>
-                {% endif %}
-            {% endwith %}
+            {% endif %}
 
             {% block content %}{% endblock %}
+
+            {% if flashed_messages and is_mobile_home %}
+                <section class="flash-stack">
+                    {% for category, message in flashed_messages %}
+                        {% if message is mapping %}
+                            <article class="flash-card flash-{{ category }}">
+                                <div class="flash-copy">
+                                    <h3>{{ message.title }}</h3>
+                                    <p>{{ message.body }}</p>
+                                    {% if message.saved_path %}
+                                        <p class="flash-path">淇濆瓨浣嶇疆锛歿{ message.saved_path }}</p>
+                                    {% endif %}
+                                </div>
+                                <div class="flash-actions">
+                                    {% if message.download_url %}
+                                        <a class="primary-button small" href="{{ message.download_url }}">涓嬭浇 PDF</a>
+                                    {% endif %}
+                                </div>
+                            </article>
+                        {% else %}
+                            <article class="flash-card flash-{{ category }}">
+                                <div class="flash-copy">
+                                    <h3>{{ '鎻愮ず' if category == 'success' else '娉ㄦ剰' }}</h3>
+                                    <p>{{ message }}</p>
+                                </div>
+                            </article>
+                        {% endif %}
+                    {% endfor %}
+                </section>
+            {% endif %}
         </main>
     </div>
 

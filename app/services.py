@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -12,6 +13,7 @@ from pathlib import Path
 
 from flask import current_app
 
+from .cache_service import get_or_build_cached_read_view
 from .constants import (
     BRIEF_EXPORT_ENABLED,
     BRIEF_UI_ENABLED,
@@ -27,6 +29,7 @@ from .constants import (
     FRONTEND_STATUS_LABELS,
     FRONTEND_STATUS_ORDER,
     PARSER_VERSION,
+    READING_TRACKS_V1,
     REPORT_NOTE_DISPLAY_LABELS,
     SECTION_DEFINITIONS,
     SECTION_KEY_ALIASES,
@@ -35,6 +38,8 @@ from .constants import (
     SECTION_SUBCATEGORY_RULES,
     SOFT_HIDDEN_SECTION_KEYS,
     STATUS_CLASS_MAP,
+    TRACK_DISPLAY_MAP,
+    TRACK_SUBTRACK_RULES,
     VISIBLE_SECTION_DEFINITIONS,
     VISIBLE_SECTION_MAP,
     VISIBLE_SECTION_ORDER,
@@ -44,6 +49,7 @@ from .db import get_connection
 from .mark_service import apply_mark_summaries_to_cards, fetch_entry_mark_summaries
 from .parsers import (
     UnsupportedFileError,
+    build_draft_metadata,
     build_sections_from_blocks,
     detect_document_type,
     extract_brief_title,
@@ -65,6 +71,7 @@ from .rendering import (
     extract_cards_from_render_payload,
     normalize_render_payload,
 )
+from .security import ensure_path_within_roots
 from .utils import (
     build_excerpt,
     compact_text,
@@ -118,17 +125,43 @@ def get_visible_section_rows(section_map: dict[str, dict]) -> list[dict]:
     return [section_map[key] for key in VISIBLE_SECTION_ORDER if key in section_map]
 
 
+def get_reading_track_meta(track_key: str) -> dict:
+    if track_key == "reading_note":
+        return {
+            "key": "reading_note",
+            "title": "阅读说明",
+            "description": "用于理解当前版本的阅读边界、口径与说明。",
+            "section_keys": ["report_note"],
+        }
+    for track in READING_TRACKS_V1:
+        if track["key"] == track_key:
+            return track
+    return {
+        "key": track_key,
+        "title": track_key,
+        "description": "",
+        "section_keys": [],
+    }
+
+
 def get_frontend_section_meta(section_key: str) -> dict:
-    return FRONTEND_SECTION_DISPLAY.get(
-        section_key,
-        {
-            "category_key": section_key,
-            "category_title": SECTION_MAP.get(section_key, {}).get("title", section_key),
-            "section_title": SECTION_MAP.get(section_key, {}).get("title", section_key),
-            "view_label": "",
-            "nav_title": SECTION_MAP.get(section_key, {}).get("title", section_key),
-        },
-    )
+    if section_key in FRONTEND_SECTION_DISPLAY:
+        meta = FRONTEND_SECTION_DISPLAY[section_key]
+        return {
+            **meta,
+            "track_key": meta["category_key"],
+            "track_title": meta["category_title"],
+        }
+    title = SECTION_MAP.get(section_key, {}).get("title", section_key)
+    return {
+        "category_key": section_key,
+        "category_title": title,
+        "section_title": title,
+        "view_label": "",
+        "nav_title": title,
+        "track_key": section_key,
+        "track_title": title,
+    }
 
 
 def get_display_status_payload(status: str, *, needs_review: bool = False) -> dict:
@@ -172,15 +205,68 @@ def strip_display_prefix(text: str) -> str:
     return NUMBER_PREFIX_PATTERN.sub("", (text or "").strip()).strip()
 
 
-def resolve_section_subcategory(section_key: str, title: str) -> str:
-    normalized = normalize_compare_text(title or "")
-    if not normalized:
-        return ""
-    for rule in SECTION_SUBCATEGORY_RULES.get(section_key, []):
-        keywords = [normalize_compare_text(keyword) for keyword in rule.get("keywords", [])]
-        if any(keyword and keyword in normalized for keyword in keywords):
-            return rule["title"]
-    return ""
+def _normalize_track_tokens(values) -> list[str]:
+    if not values:
+        return []
+    if isinstance(values, str):
+        values = re.split(r"[、,，/｜|；;\n\r]+", values)
+    normalized = []
+    for value in values:
+        text = normalize_compare_text(str(value))
+        if text and text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+def resolve_track_subcategory(track_key: str, title: str = "", tags=None) -> dict[str, str]:
+    rules = TRACK_SUBTRACK_RULES.get(track_key, [])
+    if not rules:
+        return {"key": "", "label": ""}
+
+    normalized_tags = set(_normalize_track_tokens(tags))
+    if normalized_tags:
+        for rule in rules:
+            rule_tokens = set(_normalize_track_tokens(rule.get("tag_keys", [])))
+            if rule_tokens & normalized_tags:
+                return {"key": rule["key"], "label": rule["display_label"]}
+
+    normalized_title = normalize_compare_text(title or "")
+    if normalized_title:
+        for rule in rules:
+            keywords = _normalize_track_tokens(rule.get("keywords", []))
+            if any(keyword and keyword in normalized_title for keyword in keywords):
+                return {"key": rule["key"], "label": rule["display_label"]}
+
+    return {"key": "", "label": ""}
+
+
+def resolve_section_subcategory(section_key: str, title: str, tags=None) -> str:
+    track_key = get_frontend_section_meta(section_key)["track_key"]
+    return resolve_track_subcategory(track_key, title=title, tags=tags)["label"]
+
+
+def extract_card_business_tags(card: dict) -> list[str]:
+    compare_meta = card.get("compare_meta") or {}
+    raw_values = []
+    for key in ("business_tags", "track_tags"):
+        value = card.get(key)
+        if value:
+            raw_values.extend(value if isinstance(value, list) else [value])
+        compare_value = compare_meta.get(key)
+        if compare_value:
+            raw_values.extend(compare_value if isinstance(compare_value, list) else [compare_value])
+    return _normalize_track_tokens(raw_values)
+
+
+def extract_group_business_tags(group: dict) -> list[str]:
+    raw_values = []
+    for block in group.get("blocks", []):
+        if block.get("type") == "card" and block.get("card"):
+            raw_values.extend(extract_card_business_tags(block["card"]))
+        elif block.get("type") == "table":
+            for card in block.get("cards", []):
+                raw_values.extend(extract_card_business_tags(card))
+    return _normalize_track_tokens(raw_values)
 
 
 def translate_group_heading(section_key: str, title: str | None) -> str:
@@ -205,7 +291,7 @@ def translate_group_heading(section_key: str, title: str | None) -> str:
     if subcategory_label:
         return subcategory_label
 
-    if section_key in SECTION_SUBCATEGORY_RULES:
+    if get_frontend_section_meta(section_key)["track_key"] in TRACK_SUBTRACK_RULES:
         return ""
 
     return strip_display_prefix(stripped)
@@ -216,7 +302,6 @@ def build_sidebar_primary_links(nav_date: str | None) -> list[dict]:
     return [
         {"key": "today_focus", "title": "今日重点", "href": f"{dashboard_link}#today-focus"},
         {"key": "today_new", "title": "今日新增", "href": f"{dashboard_link}#today-new"},
-        {"key": "theme_track", "title": "主题赛道", "href": f"{dashboard_link}#reading-category-theme_track"},
         {"key": "recent_changes", "title": "近期变化", "href": f"{dashboard_link}#recent-versions"},
         {"key": "history_archive", "title": "历史归档", "href": "/history"},
     ]
@@ -225,9 +310,7 @@ def build_sidebar_primary_links(nav_date: str | None) -> list[dict]:
 def build_sidebar_reading_links(nav_date: str | None) -> list[dict]:
     dashboard_link = f"/day/{nav_date}" if nav_date else "/"
     links = []
-    for category in FRONTEND_READING_CATEGORIES:
-        if category["key"] == "reading_note":
-            continue
+    for category in READING_TRACKS_V1:
         links.append(
             {
                 "key": category["key"],
@@ -414,16 +497,26 @@ def apply_detail_marks(
 
 def translate_card_for_frontend(section_key: str, card: dict, fallback_status: str) -> dict:
     translated = deepcopy(card)
+    section_meta = get_frontend_section_meta(section_key)
     internal_status = translated.get("status") or fallback_status
     status_payload = get_display_status_payload(
         internal_status,
         needs_review=bool(translated.get("needs_review")),
+    )
+    subcategory_payload = resolve_track_subcategory(
+        section_meta["track_key"],
+        title=translated.get("title") or translated.get("source_title") or "",
+        tags=extract_card_business_tags(translated),
     )
     translated["internal_status"] = internal_status
     translated["status"] = status_payload["label"]
     translated["status_class"] = status_payload["class"]
     translated["filter_value"] = status_payload["filter_value"]
     translated["source_title"] = translated.get("source_title") or translated.get("title") or "未命名来源"
+    translated["track_key"] = section_meta["track_key"]
+    translated["track_title"] = section_meta["track_title"]
+    translated["subcategory_key"] = subcategory_payload["key"]
+    translated["display_category"] = subcategory_payload["label"]
     translated["group_title_display"] = translate_group_heading(section_key, translated.get("group_title"))
     translated["why"] = translate_frontend_copy(translated.get("why"))
     return translated
@@ -437,8 +530,13 @@ def build_frontend_render_model(section_key: str, render_model: dict, section_st
     for group in groups:
         raw_title = group.get("title") or ""
         raw_category = group.get("category") or ""
+        group_tags = extract_group_business_tags(group)
         display_title = translate_group_heading(section_key, raw_title)
-        display_category = resolve_section_subcategory(section_key, raw_category or raw_title)
+        display_category = resolve_section_subcategory(
+            section_key,
+            raw_category or raw_title,
+            tags=group_tags,
+        )
         if not display_category and raw_category and section_key not in SECTION_SUBCATEGORY_RULES:
             display_category = strip_display_prefix(raw_category)
         group["display_title"] = display_title
@@ -469,7 +567,7 @@ def build_frontend_render_model(section_key: str, render_model: dict, section_st
 
 def group_sections_for_ui(section_map: dict[str, dict]) -> list[dict]:
     groups = []
-    for group in FRONTEND_READING_CATEGORIES:
+    for group in READING_TRACKS_V1:
         items = [section_map[key] for key in group["section_keys"] if key in section_map]
         groups.append(
             {
@@ -485,11 +583,12 @@ def group_sections_for_ui(section_map: dict[str, dict]) -> list[dict]:
 
 def get_section_group_meta(section_key: str) -> dict:
     section_meta = get_frontend_section_meta(section_key)
-    for group in FRONTEND_READING_CATEGORIES:
+    if section_meta["category_key"] == "reading_note":
+        return get_reading_track_meta("reading_note")
+    for group in READING_TRACKS_V1:
         if group["key"] == section_meta["category_key"]:
             return group
     return {"key": "hidden", "title": section_meta["category_title"], "description": "该板块当前仅保留历史回退能力。"}
-    return {"key": "hidden", "title": "隐藏板块", "description": "该板块当前仅保留历史回退能力。"}
 
 
 def _looks_like_text(sample: bytes) -> bool:
@@ -545,13 +644,101 @@ def get_layout_context(selected_date: str | None = None) -> dict:
         "dashboard_link": f"/day/{nav_date}" if nav_date else "/",
         "sidebar_primary_links": build_sidebar_primary_links(nav_date),
         "sidebar_reading_links": build_sidebar_reading_links(nav_date),
-        "reading_note_link": f"/day/{nav_date}#reading-category-reading_note" if nav_date else "/",
+        "reading_note_link": f"/section/{nav_date}/report_note" if nav_date else "/",
         "sidebar_section_groups": [],
         "nav_date": nav_date,
         "debug_link": debug_link,
         "export_link": export_link,
         "library_link": "/library",
     }
+
+
+def build_read_content_version(
+    connection: sqlite3.Connection,
+    *,
+    report_date: str | None = None,
+    include_exports: bool = False,
+) -> str:
+    if report_date:
+        document_params = (report_date,)
+        entry_params = (report_date,)
+        document_query = """
+            SELECT GROUP_CONCAT(signature, '|') AS value
+            FROM (
+                SELECT id || ':' || report_date || ':' || doc_type || ':' || lifecycle_status || ':' || is_current || ':' || COALESCE(withdrawn_at, '') || ':' || uploaded_at AS signature
+                FROM documents
+                WHERE lifecycle_status != 'deleted'
+                  AND report_date <= ?
+                ORDER BY id
+            )
+        """
+        entry_query = """
+            SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at), '0') AS value
+            FROM entries
+            WHERE is_current_chain = 1
+              AND is_deleted = 0
+              AND report_date <= ?
+        """
+    else:
+        document_params = ()
+        entry_params = ()
+        document_query = """
+            SELECT GROUP_CONCAT(signature, '|') AS value
+            FROM (
+                SELECT id || ':' || report_date || ':' || doc_type || ':' || lifecycle_status || ':' || is_current || ':' || COALESCE(withdrawn_at, '') || ':' || uploaded_at AS signature
+                FROM documents
+                WHERE lifecycle_status != 'deleted'
+                ORDER BY id
+            )
+        """
+        entry_query = """
+            SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at), '0') AS value
+            FROM entries
+            WHERE is_current_chain = 1
+              AND is_deleted = 0
+        """
+
+    document_signature = _fetch_cache_signature(connection, document_query, document_params)
+    entry_signature = _fetch_cache_signature(connection, entry_query, entry_params)
+    rebuild_signature = _fetch_cache_signature(
+        connection,
+        """
+        SELECT COUNT(*) || ':' || COALESCE(MAX(COALESCE(completed_at, started_at)), '0') AS value
+        FROM rebuild_runs
+        """,
+    )
+    export_signature = "exports:skip"
+    if include_exports:
+        export_signature = _fetch_cache_signature(
+            connection,
+            """
+            SELECT GROUP_CONCAT(signature, '|') AS value
+            FROM (
+                SELECT id || ':' || report_date || ':' || status || ':' || file_name || ':' || created_at AS signature
+                FROM export_files
+                WHERE status != 'deleted'
+                ORDER BY id
+            )
+            """,
+        )
+
+    raw_version = "|".join(
+        [
+            f"docs:{document_signature}",
+            f"entries:{entry_signature}",
+            f"rebuild:{rebuild_signature}",
+            f"exports:{export_signature}",
+        ]
+    )
+    return hashlib.sha1(raw_version.encode("utf-8")).hexdigest()[:20]
+
+
+def _fetch_cache_signature(connection: sqlite3.Connection, query: str, params: tuple = ()) -> str:
+    row = connection.execute(query, params).fetchone()
+    if not row:
+        return "0"
+    value = row["value"]
+    return value if value else "0"
 
 
 def get_latest_report_date() -> str | None:
@@ -698,6 +885,8 @@ def process_single_file(file_storage) -> ProcessingResult:
     file_hash = sha256_file(final_path)
     uploaded_at = now_string()
 
+    document_id = 0
+    existing_rows = []
     with get_connection(current_app.config["DATABASE_PATH"]) as connection:
         existing_rows = connection.execute(
             """
@@ -781,7 +970,35 @@ def process_single_file(file_storage) -> ProcessingResult:
         connection.commit()
 
     if doc_type == "draft":
-        rebuild_effective_chain_from(report_date)
+        try:
+            rebuild_effective_chain_from(report_date)
+        except Exception as error:
+            with get_connection(current_app.config["DATABASE_PATH"]) as connection:
+                inserted_row = connection.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
+                if inserted_row:
+                    set_document_status(connection, inserted_row, "withdrawn", is_current=False)
+
+                if existing_rows:
+                    restore_row = connection.execute("SELECT * FROM documents WHERE id = ?", (existing_rows[0]["id"],)).fetchone()
+                    if restore_row and restore_row["lifecycle_status"] != "deleted":
+                        activate_document_row(connection, restore_row)
+                        archive_same_day_siblings(connection, restore_row)
+                connection.commit()
+
+            return ProcessingResult(
+                success=False,
+                original_name=original_name,
+                saved_name=saved_name,
+                report_date=report_date,
+                document_type=doc_type,
+                document_type_label=DOCUMENT_TYPE_LABELS[doc_type],
+                recognition_note=recognition_note,
+                message=f"上传后重建失败，系统已回滚到上一个稳定版本：{error}",
+                stored_path=str(final_path),
+                parsed_path=str(parsed_path),
+                validation_warnings=validation_warnings,
+                parse_report_lines=parse_report_lines,
+            )
 
     return ProcessingResult(
         success=True,
@@ -821,6 +1038,7 @@ def parse_document(file_path: Path, doc_type: str, fallback_content: str, report
         }
 
     draft_payload = parse_draft_from_source(file_path, fallback_content)
+    draft_metadata = draft_payload.get("metadata") or {}
     return {
         "title": f"{report_date} 沉香行业情报研究底稿",
         "content": draft_payload["content"],
@@ -831,6 +1049,9 @@ def parse_document(file_path: Path, doc_type: str, fallback_content: str, report
             "doc_type": doc_type,
             "section_count": len(draft_payload["sections"]),
             "tail_hits": draft_payload.get("tail_hits", []),
+            "contract_version": draft_metadata.get("contract_version", "unknown"),
+            "window_metadata": draft_metadata.get("window_metadata", {}),
+            "draft_metadata": draft_metadata,
         },
     }
 
@@ -840,7 +1061,12 @@ def parse_draft_from_source(file_path: Path | None, fallback_content: str) -> di
         return parse_draft_file(file_path, fallback_content)
     blocks = text_to_blocks(fallback_content)
     sections = build_sections_from_blocks(blocks)
-    return {"content": fallback_content, "sections": sections, "tail_hits": []}
+    return {
+        "content": fallback_content,
+        "sections": sections,
+        "tail_hits": [],
+        "metadata": build_draft_metadata(sections),
+    }
 
 
 def parse_brief_from_source(file_path: Path | None, fallback_content: str) -> dict:
@@ -1385,6 +1611,30 @@ def get_day_snapshot(
     viewer_role: str = "guest",
 ) -> dict:
     with get_connection(current_app.config["DATABASE_PATH"]) as connection:
+        content_version = build_read_content_version(connection, report_date=report_date)
+
+    cache_key = f"day_snapshot_base:{report_date}:{content_version}"
+    snapshot, _from_cache = get_or_build_cached_read_view(
+        cache_key,
+        lambda: _build_day_snapshot_base(report_date),
+    )
+    apply_section_preview_marks(
+        snapshot["sections"],
+        viewer_identity_id=viewer_identity_id,
+        viewer_role=viewer_role,
+    )
+    snapshot["section_groups"] = group_sections_for_ui({section["key"]: section for section in snapshot["sections"]})
+    snapshot["today_focus_sections"] = build_today_focus_sections(snapshot["sections"])
+    snapshot["today_new_sections"] = build_today_new_sections(snapshot["sections"])
+    snapshot["featured_sections"] = snapshot["today_focus_sections"]
+    snapshot["overview"]["featured_sections"] = len(snapshot["today_focus_sections"])
+    snapshot["overview"]["today_focus_sections"] = len(snapshot["today_focus_sections"])
+    snapshot["overview"]["today_new_sections"] = len(snapshot["today_new_sections"])
+    return snapshot
+
+
+def _build_day_snapshot_base(report_date: str) -> dict:
+    with get_connection(current_app.config["DATABASE_PATH"]) as connection:
         brief = get_current_document(connection, report_date, "brief")
         draft = get_current_document(connection, report_date, "draft")
         _draft_chain, cumulative_views = build_cumulative_section_views(connection, report_date)
@@ -1397,11 +1647,6 @@ def get_day_snapshot(
             section_map = {definition["key"]: empty_section_card(definition["key"]) for definition in VISIBLE_SECTION_DEFINITIONS}
 
     sections = get_visible_section_rows(section_map)
-    apply_section_preview_marks(
-        sections,
-        viewer_identity_id=viewer_identity_id,
-        viewer_role=viewer_role,
-    )
     section_groups = group_sections_for_ui(section_map)
     today_focus_sections = build_today_focus_sections(sections)
     today_new_sections = build_today_new_sections(sections)
@@ -1503,12 +1748,14 @@ def empty_section_card(section_key: str) -> dict:
         "key": section_key,
         "number": SECTION_MAP[section_key]["number"],
         "title": section_meta["section_title"],
-        "display_title": section_meta["view_label"] or section_meta["section_title"],
-        "display_kicker": section_meta["category_title"] if section_meta["view_label"] else "",
+        "display_title": section_meta["section_title"],
+        "display_kicker": section_meta["category_title"],
         "category_key": section_meta["category_key"],
         "category_title": section_meta["category_title"],
         "view_label": section_meta["view_label"],
         "internal_title": SECTION_MAP[section_key]["title"],
+        "track_key": section_meta["track_key"],
+        "track_title": section_meta["track_title"],
         "internal_status": "无内容",
         "status": display_status["label"],
         "status_class": display_status["class"],
@@ -1574,15 +1821,33 @@ def build_section_card(connection: sqlite3.Connection, row) -> dict:
     needs_review_count = sum(1 for card in cards if card.get("needs_review"))
     display_status = get_display_status_payload(row["status"])
     display_status_counts = translate_status_counts(status_counts, needs_review_count)
+    preview_cards = preview_payload["cards"]
+    for preview_card, source_card in zip(preview_cards, cards[: len(preview_cards)]):
+        subcategory_payload = resolve_track_subcategory(
+            section_meta["track_key"],
+            title=source_card.get("title") or source_card.get("source_title") or "",
+            tags=extract_card_business_tags(source_card),
+        )
+        preview_card["track_title"] = section_meta["track_title"]
+        preview_card["subcategory_label"] = subcategory_payload["label"]
+        preview_tags = []
+        if subcategory_payload["label"]:
+            preview_tags.append(subcategory_payload["label"])
+        for tag in preview_card.get("tags") or []:
+            if tag and tag not in preview_tags:
+                preview_tags.append(tag)
+        preview_card["tags"] = preview_tags[:3]
     return {
         "key": section_key,
         "number": SECTION_MAP[section_key]["number"],
         "title": section_meta["section_title"],
-        "display_title": section_meta["view_label"] or section_meta["section_title"],
-        "display_kicker": section_meta["category_title"] if section_meta["view_label"] else "",
+        "display_title": section_meta["section_title"],
+        "display_kicker": section_meta["category_title"],
         "category_key": section_meta["category_key"],
         "category_title": section_meta["category_title"],
         "view_label": section_meta["view_label"],
+        "track_key": section_meta["track_key"],
+        "track_title": section_meta["track_title"],
         "internal_title": row["section_title"],
         "internal_status": row["status"],
         "status": display_status["label"],
@@ -1599,12 +1864,12 @@ def build_section_card(connection: sqlite3.Connection, row) -> dict:
         "status_pills": build_status_pills(display_status_counts),
         "internal_item_status_counts": status_counts,
         "preview_mode": preview_payload["mode"],
-        "preview_cards": preview_payload["cards"],
+        "preview_cards": preview_cards,
         "needs_review_count": needs_review_count,
         "new_count": status_counts.get("新增", 0),
         "updated_count": status_counts.get("更新", 0),
         "review_count": needs_review_count,
-        "entry_ids": [preview["entry_id"] for preview in preview_payload["cards"] if preview.get("entry_id")],
+        "entry_ids": [preview["entry_id"] for preview in preview_cards if preview.get("entry_id")],
         "manual_mark_count": 0,
         "has_manual_marks": False,
         "manual_mark_note": "",
@@ -2150,6 +2415,18 @@ def is_non_body_tail_text(text: str) -> bool:
 
 def get_history_overview(limit: int = 30) -> list[dict]:
     with get_connection(current_app.config["DATABASE_PATH"]) as connection:
+        content_version = build_read_content_version(connection)
+
+    cache_key = f"history_overview:{limit}:{content_version}"
+    history, _from_cache = get_or_build_cached_read_view(
+        cache_key,
+        lambda: _build_history_overview_base(limit),
+    )
+    return history
+
+
+def _build_history_overview_base(limit: int = 30) -> list[dict]:
+    with get_connection(current_app.config["DATABASE_PATH"]) as connection:
         doc_rows = connection.execute(
             """
             SELECT *
@@ -2218,6 +2495,28 @@ def get_section_detail(
     viewer_identity_id: int | None = None,
     viewer_role: str = "guest",
 ) -> dict | None:
+    resolved_section_key = resolve_section_key(section_key)
+    with get_connection(current_app.config["DATABASE_PATH"]) as connection:
+        content_version = build_read_content_version(connection, report_date=report_date)
+
+    cache_key = f"section_detail_base:{report_date}:{resolved_section_key}:{content_version}"
+    detail, _from_cache = get_or_build_cached_read_view(
+        cache_key,
+        lambda: _build_section_detail_base(report_date, resolved_section_key),
+    )
+    if not detail:
+        return None
+
+    mark_summaries = apply_detail_marks(
+        detail["render_model"],
+        viewer_identity_id=viewer_identity_id,
+        viewer_role=viewer_role,
+    )
+    detail["manual_mark_count"] = sum(1 for summary in mark_summaries.values() if summary.get("has_marks"))
+    return detail
+
+
+def _build_section_detail_base(report_date: str, section_key: str) -> dict | None:
     section_key = resolve_section_key(section_key)
     if section_key not in SECTION_MAP:
         return None
@@ -2240,11 +2539,6 @@ def get_section_detail(
     )
     render_model.setdefault("status_counts", infer_render_status_counts(row["status"], render_model, row["display_content"] or row["raw_content"] or ""))
     render_model = build_frontend_render_model(section_key, render_model, row["status"])
-    mark_summaries = apply_detail_marks(
-        render_model,
-        viewer_identity_id=viewer_identity_id,
-        viewer_role=viewer_role,
-    )
     raw_content = row["raw_content"] or ""
     has_effective_content = bool(raw_content.strip())
     parse_warning = ""
@@ -2261,9 +2555,12 @@ def get_section_detail(
         "title": section_meta["section_title"],
         "category_key": section_meta["category_key"],
         "category_title": section_meta["category_title"],
+        "track_key": section_meta["track_key"],
+        "track_title": section_meta["track_title"],
+        "source_section_title": row["section_title"],
         "view_label": section_meta["view_label"],
-        "display_title": section_meta["view_label"] or section_meta["section_title"],
-        "display_kicker": section_meta["category_title"] if section_meta["view_label"] else "",
+        "display_title": section_meta["track_title"],
+        "display_kicker": "阅读赛道",
         "status": display_status["label"],
         "status_class": display_status["class"],
         "internal_title": row["section_title"],
@@ -2278,7 +2575,7 @@ def get_section_detail(
         "current_file_path": row["current_file_path"],
         "current_file_id": row.get("current_document_id") or row["document_id"],
         "render_model": render_model,
-        "manual_mark_count": sum(1 for summary in mark_summaries.values() if summary.get("has_marks")),
+        "manual_mark_count": 0,
         "has_effective_content": has_effective_content,
         "parse_warning": parse_warning,
         "debug_url": f"/debug/sections/{report_date}",
@@ -2547,6 +2844,18 @@ def resolve_section_key(section_key: str) -> str:
 
 
 def get_file_library_view() -> dict:
+    with get_connection(current_app.config["DATABASE_PATH"]) as connection:
+        content_version = build_read_content_version(connection, include_exports=True)
+
+    cache_key = f"library_overview:{content_version}"
+    library_view, _from_cache = get_or_build_cached_read_view(
+        cache_key,
+        _build_file_library_view_base,
+    )
+    return library_view
+
+
+def _build_file_library_view_base() -> dict:
     with get_connection(current_app.config["DATABASE_PATH"]) as connection:
         document_rows = connection.execute(
             """
@@ -2923,7 +3232,11 @@ def get_document_download_path(document_id: int) -> Path:
         raise ValueError("未找到文件。")
     if row["lifecycle_status"] == "deleted":
         raise ValueError("该文件已删除。")
-    return Path(row["stored_path"])
+    return ensure_path_within_roots(
+        row["stored_path"],
+        [current_app.config["FILE_LIBRARY_ROOT"]],
+        label="文件下载",
+    )
 
 
 def get_export_download_path(export_id: int) -> Path:
@@ -2936,7 +3249,11 @@ def get_export_download_path(export_id: int) -> Path:
         raise ValueError("未找到导出文件。")
     if row["status"] == "deleted":
         raise ValueError("该导出文件已删除。")
-    return Path(row["stored_path"])
+    return ensure_path_within_roots(
+        row["stored_path"],
+        [current_app.config["EXPORTS_ROOT"]],
+        label="导出文件",
+    )
 
 
 def delete_export_file(export_id: int) -> dict:
@@ -2997,6 +3314,15 @@ def upgrade_existing_documents() -> None:
         draft_rows = [row for row in current_rows if row["doc_type"] == "draft"]
         brief_rows = [row for row in current_rows if row["doc_type"] == "brief"]
         start_date = draft_rows[0]["report_date"] if draft_rows and any(needs_upgrade(row) or missing_sections(connection, row["id"]) for row in draft_rows) else None
+        current_entry_count = connection.execute(
+            """
+            SELECT COUNT(1) AS count
+            FROM entries
+            WHERE is_current_chain = 1
+              AND is_deleted = 0
+            """
+        ).fetchone()["count"]
+        needs_full_rebuild = bool(draft_rows) and current_entry_count == 0
 
         if brief_rows and any(needs_upgrade(row) for row in brief_rows):
             reparse_current_briefs(connection, brief_rows)
@@ -3007,7 +3333,8 @@ def upgrade_existing_documents() -> None:
         rebuild_effective_chain_from(start_date)
         return
 
-    rebuild_repaired_entries(write_reports=False)
+    if needs_full_rebuild:
+        rebuild_repaired_entries(write_reports=False)
 
 
 def normalize_existing_document_statuses(connection: sqlite3.Connection) -> None:

@@ -142,6 +142,10 @@ CREATE INDEX IF NOT EXISTS idx_entries_display_status
 CREATE TABLE IF NOT EXISTS entry_marks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     entry_id INTEGER NOT NULL,
+    entry_event_key TEXT,
+    entry_module_key TEXT,
+    entry_report_date TEXT,
+    entry_title TEXT,
     marker_identity_id INTEGER NOT NULL,
     mark_type TEXT NOT NULL DEFAULT 'focus',
     note TEXT,
@@ -277,6 +281,10 @@ def init_db(database_path: Path) -> None:
         ensure_column(connection, "entries", "evidence_json", "TEXT")
         ensure_column(connection, "entries", "created_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(connection, "entries", "updated_at", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(connection, "entry_marks", "entry_event_key", "TEXT")
+        ensure_column(connection, "entry_marks", "entry_module_key", "TEXT")
+        ensure_column(connection, "entry_marks", "entry_report_date", "TEXT")
+        ensure_column(connection, "entry_marks", "entry_title", "TEXT")
         ensure_column(connection, "rebuild_runs", "source_index_path", "TEXT")
         ensure_column(connection, "rebuild_runs", "evidence_map_path", "TEXT")
         ensure_column(connection, "rebuild_runs", "decisions_path", "TEXT")
@@ -292,6 +300,49 @@ def init_db(database_path: Path) -> None:
         ensure_column(connection, "access_identities", "updated_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(connection, "access_identities", "last_used_at", "TEXT")
         ensure_column(connection, "access_identities", "secret_hash", "TEXT")
+        connection.execute(
+            """
+            UPDATE entry_marks
+            SET entry_event_key = COALESCE(NULLIF(entry_event_key, ''), (
+                    SELECT e.event_key
+                    FROM entries e
+                    WHERE e.id = entry_marks.entry_id
+                    LIMIT 1
+                )),
+                entry_module_key = COALESCE(NULLIF(entry_module_key, ''), (
+                    SELECT e.module_key
+                    FROM entries e
+                    WHERE e.id = entry_marks.entry_id
+                    LIMIT 1
+                )),
+                entry_report_date = COALESCE(NULLIF(entry_report_date, ''), (
+                    SELECT e.report_date
+                    FROM entries e
+                    WHERE e.id = entry_marks.entry_id
+                    LIMIT 1
+                )),
+                entry_title = COALESCE(NULLIF(entry_title, ''), (
+                    SELECT e.title
+                    FROM entries e
+                    WHERE e.id = entry_marks.entry_id
+                    LIMIT 1
+                ))
+            WHERE entry_id IS NOT NULL
+              AND (
+                  COALESCE(entry_event_key, '') = ''
+                  OR COALESCE(entry_module_key, '') = ''
+                  OR COALESCE(entry_report_date, '') = ''
+                  OR COALESCE(entry_title, '') = ''
+              )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_entry_marks_event_lookup
+            ON entry_marks(entry_event_key, is_active, updated_at DESC)
+            """
+        )
+        connection.commit()
 
 
 def ensure_column(connection: sqlite3.Connection, table_name: str, column_name: str, column_type: str) -> None:

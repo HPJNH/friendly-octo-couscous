@@ -3,8 +3,8 @@ from __future__ import annotations
 import hmac
 import json
 import secrets
-from datetime import datetime
-from datetime import timedelta
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from flask import current_app, request, session
 from markupsafe import Markup, escape
@@ -17,6 +17,7 @@ CSRF_SESSION_KEY = "_csrf_token"
 AUTH_WINDOW_MINUTES_DEFAULT = 30
 AUTH_LOCK_MINUTES_DEFAULT = 15
 AUTH_MAX_FAILURES_DEFAULT = 5
+
 AUDIT_ACTION_LABELS = {
     "access.logout": "退出会话",
     "access_identity.create": "创建访问资格",
@@ -29,12 +30,17 @@ AUDIT_ACTION_LABELS = {
     "document.activate": "设为当前版本",
     "document.delete": "删除文件",
     "export.delete": "删除导出文件",
+    "entry_mark.created": "创建重点标记",
+    "entry_mark.updated": "更新重点标记",
+    "entry_mark.deactivate": "取消重点标记",
 }
+
 AUDIT_TARGET_LABELS = {
     "document": "文件",
     "export": "导出成果",
     "access_identity": "访问资格",
     "session": "会话",
+    "entry_mark": "重点标记",
 }
 
 
@@ -75,13 +81,42 @@ def validate_csrf_token(candidate: str | None) -> bool:
 
 
 def get_remote_identity() -> str:
-    forwarded = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-    remote_addr = forwarded or request.remote_addr or "unknown"
+    # request.remote_addr already reflects ProxyFix when TRUST_PROXY_HEADERS is enabled.
+    remote_addr = request.remote_addr or "unknown"
     return remote_addr[:120]
 
 
 def get_user_agent_excerpt() -> str:
     return (request.headers.get("User-Agent") or "")[:240]
+
+
+def ensure_path_within_roots(candidate_path: str | Path, allowed_roots: list[Path] | tuple[Path, ...], *, label: str) -> Path:
+    raw_value = str(candidate_path or "").strip()
+    if not raw_value:
+        raise ValueError(f"{label} 路径为空。")
+
+    path = Path(raw_value)
+    try:
+        resolved_path = path.resolve(strict=False)
+    except OSError as exc:
+        raise ValueError(f"{label} 路径解析失败：{exc}") from exc
+
+    normalized_roots: list[Path] = []
+    for root in allowed_roots:
+        if not root:
+            continue
+        normalized_roots.append(Path(root).resolve(strict=False))
+
+    if not normalized_roots:
+        raise ValueError(f"{label} 缺少受控根目录配置。")
+
+    if not any(resolved_path == root or root in resolved_path.parents for root in normalized_roots):
+        raise ValueError(f"{label} 超出受控根目录。")
+
+    if not resolved_path.exists() or not resolved_path.is_file():
+        raise ValueError(f"{label} 不存在或不可读取。")
+
+    return resolved_path
 
 
 def _parse_time(value: str | None):

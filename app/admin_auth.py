@@ -13,6 +13,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from .db import get_connection
 from .security import get_recent_audit_logs, rotate_csrf_token
+from .url_runtime import sanitize_redirect_target
 from .utils import now_string
 
 
@@ -418,17 +419,7 @@ def verify_access_secret(secret: str, required_role: str = "viewer") -> tuple[bo
 
 def build_safe_next(candidate: str | None = None, fallback: str | None = None) -> str:
     value = candidate or (request.full_path.rstrip("?") if request.method == "GET" else request.referrer) or fallback or url_for("main.index")
-    if not value:
-        return url_for("main.index")
-    if value.startswith("/"):
-        return value
-    for marker in ("http://127.0.0.1", "http://localhost", "http://192.168.", "http://10.", "http://172.16."):
-        if value.startswith(marker):
-            path = value.split("/", 3)
-            if len(path) >= 4:
-                return "/" + path[3]
-            return url_for("main.index")
-    return fallback or url_for("main.index")
+    return sanitize_redirect_target(value, fallback or url_for("main.index"))
 
 
 def access_required(view):

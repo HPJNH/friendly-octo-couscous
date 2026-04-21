@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date
 from pathlib import Path
 import re
 
@@ -16,9 +17,12 @@ from .constants import (
     DRAFT_KEYWORDS,
     DRAFT_MAIN_TITLE,
     DRAFT_REPORT_NOTE_SUBSECTIONS,
+    DRAFT_STANDARD_SUBSECTION_ALIASES,
     DRAFT_STANDARD_SUBSECTIONS,
     DRAFT_STRUCTURED_TABLE_COLUMNS,
+    DRAFT_STRUCTURED_TABLE_COLUMNS_V2,
     DRAFT_TAIL_PATTERNS,
+    DRAFT_WINDOW_METADATA_LABELS,
     SECTION_DEFINITIONS,
 )
 from .utils import compact_text, normalize_heading
@@ -29,6 +33,8 @@ ARABIC_NUMBERS = [str(number) for number in range(10, 0, -1)]
 SUBHEADING_PATTERN = re.compile(r"^\s*(?P<path>\d+(?:\.\d+)+)\s*(?P<title>.+?)\s*$")
 TRAILING_HEADING_SUFFIX_PATTERN = re.compile(r"\s*[（(【\[].{0,18}[)）】\]]\s*$")
 NON_BODY_TAIL_PATTERN = re.compile("|".join(re.escape(item) for item in DRAFT_TAIL_PATTERNS if item))
+DATE_PATTERN = re.compile(r"(20\d{2})[.\-/年](\d{1,2})[.\-/月](\d{1,2})")
+CHINESE_DATE_PATTERN = re.compile(r"(20\d{2})年(\d{1,2})月(\d{1,2})日")
 
 
 class UnsupportedFileError(Exception):
@@ -160,7 +166,12 @@ def parse_draft_file(file_path: Path, fallback_text: str = "") -> dict:
         blocks = text_to_blocks(text)
     blocks, tail_hits = sanitize_document_blocks(blocks, trim_tail=True)
     sections = build_sections_from_blocks(blocks)
-    return {"content": blocks_to_plain_text(blocks), "sections": sections, "tail_hits": tail_hits}
+    return {
+        "content": blocks_to_plain_text(blocks),
+        "sections": sections,
+        "tail_hits": tail_hits,
+        "metadata": build_draft_metadata(sections),
+    }
 
 
 def parse_brief_file(file_path: Path, fallback_text: str = "") -> dict:
@@ -589,9 +600,9 @@ def validate_section_contract(definition: dict, section_blocks: list[dict]) -> d
         if not actual_title:
             errors.append(f"模块 {section_number}《{section_title}》缺少固定子结构 {path} {expected_title}。")
             continue
-        if normalize_heading(actual_title) != normalize_heading(expected_title):
+        if not matches_expected_subsection_title(path, actual_title, expected_title):
             errors.append(
-                f"模块 {section_number}《{section_title}》的子结构 {path} 标题应为“{expected_title}”，当前识别为“{actual_title}”。"
+                f"模块 {section_number}《{section_title}》的子结构 {path} 标题应为“{expected_title}”或其兼容别名，当前识别为“{actual_title}”。"
             )
     for path, titles in duplicate_subsections.items():
         errors.append(
@@ -610,12 +621,14 @@ def validate_section_contract(definition: dict, section_blocks: list[dict]) -> d
                 errors.append(f"模块 1《{section_title}》的 {current_subheading or '说明区'} 不应出现结构化表格，请改为说明块。")
                 continue
             if not current_subheading.endswith((".1", ".2", ".3")):
-                errors.append(f"模块 {section_number}《{section_title}》的 {current_subheading or '结构区'} 不应出现表格，请仅在 x.1 / x.2 / x.3 放置 6 列表格。")
+                errors.append(f"模块 {section_number}《{section_title}》的 {current_subheading or '结构区'} 不应出现表格，请仅在 x.1 / x.2 / x.3 放置 v1 6 列或 v2 9 列表格。")
                 continue
-            if headers != DRAFT_STRUCTURED_TABLE_COLUMNS:
+            header_mode = identify_draft_table_contract(headers)
+            if header_mode is None:
                 errors.append(
                     f"模块 {section_number}《{section_title}》的第 {table_count} 张表格列数或列名不符合模板要求，"
-                    f"应为 {len(DRAFT_STRUCTURED_TABLE_COLUMNS)} 列：{' / '.join(DRAFT_STRUCTURED_TABLE_COLUMNS)}。"
+                    f"应为 v1 的 {len(DRAFT_STRUCTURED_TABLE_COLUMNS)} 列：{' / '.join(DRAFT_STRUCTURED_TABLE_COLUMNS)}，"
+                    f"或 v2 的 {len(DRAFT_STRUCTURED_TABLE_COLUMNS_V2)} 列：{' / '.join(DRAFT_STRUCTURED_TABLE_COLUMNS_V2)}。"
                 )
             else:
                 structured_item_count += len(rows)
@@ -642,7 +655,7 @@ def validate_section_contract(definition: dict, section_blocks: list[dict]) -> d
             continue
 
         errors.append(
-            f"模块 {section_number}《{section_title}》的 {current_subheading or '结构区'} 出现无法归类的自由文本段落：{text[:36]}。x.1 / x.2 / x.3 必须是固定 6 列表格，空结果也要写成占位表格。"
+            f"模块 {section_number}《{section_title}》的 {current_subheading or '结构区'} 出现无法归类的自由文本段落：{text[:36]}。x.1 / x.2 / x.3 必须是 v1 6 列或 v2 9 列表格，空结果也要写成占位表格。"
         )
 
     return {
@@ -661,6 +674,17 @@ def expected_section_subsections(section_key: str, section_number: int) -> list[
     return [(f"{section_number}.{suffix}", title) for suffix, title in DRAFT_STANDARD_SUBSECTIONS]
 
 
+def matches_expected_subsection_title(path: str, actual_title: str, expected_title: str) -> bool:
+    actual_normalized = normalize_heading(actual_title)
+    if actual_normalized == normalize_heading(expected_title):
+        return True
+    suffix = path.split(".")[-1] if "." in path else path
+    for alias in DRAFT_STANDARD_SUBSECTION_ALIASES.get(suffix, []):
+        if actual_normalized == normalize_heading(alias):
+            return True
+    return False
+
+
 def canonical_subheading_path(path: str) -> str:
     parts = [piece for piece in (path or "").split(".") if piece]
     if len(parts) >= 2:
@@ -673,6 +697,15 @@ def split_validation_table(rows: list[list[str]]) -> tuple[list[str], list[list[
     if not normalized_rows:
         return [], []
     return normalized_rows[0], normalized_rows[1:]
+
+
+def identify_draft_table_contract(headers: list[str]) -> str | None:
+    compact_headers = [item.strip() for item in headers]
+    if compact_headers == DRAFT_STRUCTURED_TABLE_COLUMNS:
+        return "v1"
+    if compact_headers == DRAFT_STRUCTURED_TABLE_COLUMNS_V2:
+        return "v2"
+    return None
 
 
 def trim_row(row: list[str]) -> list[str]:
@@ -689,6 +722,105 @@ def find_first_paragraph_text(blocks: list[dict]) -> str:
         if block["type"] == "paragraph":
             return clean_text(block.get("text", ""))
     return ""
+
+
+def build_draft_metadata(sections: dict[str, dict]) -> dict:
+    contract_versions: set[str] = set()
+    for section_key, section in sections.items():
+        if section_key == "report_note":
+            continue
+        for block in section.get("blocks", []):
+            if block.get("type") != "table":
+                continue
+            headers, _rows = split_validation_table(block.get("rows", []))
+            header_mode = identify_draft_table_contract(headers)
+            if header_mode:
+                contract_versions.add(header_mode)
+
+    if "v2" in contract_versions:
+        contract_version = "v2"
+    elif "v1" in contract_versions:
+        contract_version = "v1"
+    else:
+        contract_version = "unknown"
+
+    return {
+        "contract_version": contract_version,
+        "window_metadata": extract_window_metadata(sections),
+    }
+
+
+def extract_window_metadata(sections: dict[str, dict]) -> dict:
+    report_note = sections.get("report_note") or {}
+    report_note_blocks = report_note.get("blocks") or []
+    primary_texts = extract_report_note_subsection_texts(report_note_blocks, "1.1")
+    fallback_texts = collect_report_note_paragraph_texts(report_note_blocks)
+    metadata: dict[str, list[str]] = {}
+    for key, labels in DRAFT_WINDOW_METADATA_LABELS.items():
+        window_range = extract_window_range_from_texts(primary_texts, labels)
+        if not window_range:
+            window_range = extract_window_range_from_texts(fallback_texts, labels)
+        if window_range:
+            metadata[key] = [window_range[0].isoformat(), window_range[1].isoformat()]
+    return metadata
+
+
+def extract_report_note_subsection_texts(blocks: list[dict], target_path: str) -> list[str]:
+    current_path = ""
+    texts: list[str] = []
+    for block in blocks:
+        if block.get("type") == "heading":
+            current_path = canonical_subheading_path(block.get("path") or "")
+            continue
+        if block.get("type") != "paragraph":
+            continue
+        text = clean_text(block.get("text", ""))
+        if text and current_path == target_path:
+            texts.append(text)
+    return texts
+
+
+def collect_report_note_paragraph_texts(blocks: list[dict]) -> list[str]:
+    texts: list[str] = []
+    for block in blocks:
+        if block.get("type") != "paragraph":
+            continue
+        text = clean_text(block.get("text", ""))
+        if text:
+            texts.append(text)
+    return texts
+
+
+def extract_window_range_from_texts(texts: list[str], labels: list[str]) -> tuple | None:
+    for text in texts:
+        for label in labels:
+            window_range = extract_window_range_from_text(text, label)
+            if window_range:
+                return window_range
+    return None
+
+
+def extract_window_range_from_text(text: str, label: str) -> tuple | None:
+    cleaned = clean_text(text or "")
+    if not cleaned or label not in cleaned:
+        return None
+
+    labeled_segment = cleaned.split(label, 1)[1]
+    dates = extract_dates_from_text(labeled_segment)
+    if len(dates) >= 2:
+        return min(dates[:2]), max(dates[:2])
+    return None
+
+
+def extract_dates_from_text(text: str) -> list:
+    values = []
+    for pattern in (DATE_PATTERN, CHINESE_DATE_PATTERN):
+        for year, month, day in pattern.findall(text or ""):
+            try:
+                values.append(date(int(year), int(month), int(day)))
+            except ValueError:
+                continue
+    return values
 
 
 def looks_like_non_body_tail(text: str) -> bool:

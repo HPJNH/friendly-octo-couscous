@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sqlite3
 from collections import defaultdict
@@ -10,14 +11,22 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from docx import Document
-from flask import current_app
+from flask import current_app, has_app_context
 
 from .constants import (
+    BUSINESS_TAG_CANONICAL_MAP,
     DRAFT_STANDARD_SUBSECTIONS,
     DRAFT_STRUCTURED_TABLE_COLUMNS,
+    DRAFT_STRUCTURED_TABLE_COLUMNS_V2,
+    LEGACY_FUZZY_LINK_BACKFILL_ENABLED,
+    LEGACY_FUZZY_LINK_BACKFILL_THRESHOLD,
+    LEGACY_V1_FUZZY_MATCH_ENABLED,
+    LEGACY_V1_FUZZY_MATCH_THRESHOLD,
     PARSER_VERSION,
     SECTION_DEFINITIONS,
+    SECTION_SUBCATEGORY_RULES,
 )
+from .db import get_connection
 from .parsers import parse_draft_file
 from .rendering import build_card, choose_section_template, template_label
 from .utils import detect_date_from_filename, load_json, normalize_compare_text, now_string
@@ -49,8 +58,7 @@ def rebuild_repaired_entries(mode: str = "full", write_reports: bool = True) -> 
     started_at = now_string()
     run_key = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{mode}"
 
-    with sqlite3.connect(database_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with get_connection(database_path) as connection:
         ensure_rebuild_tables(connection)
         run_id = connection.execute(
             """
@@ -115,7 +123,7 @@ def rebuild_repaired_entries(mode: str = "full", write_reports: bool = True) -> 
     summary["started_at"] = started_at
     summary["completed_at"] = now_string()
 
-    with sqlite3.connect(database_path) as connection:
+    with get_connection(database_path) as connection:
         connection.execute(
             """
             UPDATE rebuild_runs
@@ -289,8 +297,7 @@ def build_version_hint(file_name: str, report_date: str | None) -> str:
 
 
 def load_active_current_drafts(database_path: Path) -> list[sqlite3.Row]:
-    with sqlite3.connect(database_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with get_connection(database_path) as connection:
         return connection.execute(
             """
             SELECT *
@@ -311,19 +318,26 @@ def load_draft_payload_from_row(row) -> dict:
     parsed_path = Path(row["parsed_path"]) if row["parsed_path"] else None
     if parsed_path and parsed_path.exists():
         payload = load_json(parsed_path.read_text(encoding="utf-8"), {})
+        document_metadata = payload.get("document_metadata", {}) or {}
         return {
             "content": payload.get("content", row["content"] or ""),
             "sections": payload.get("sections", {}),
-            "tail_hits": payload.get("document_metadata", {}).get("tail_hits", []),
+            "tail_hits": document_metadata.get("tail_hits", []),
+            "metadata": document_metadata.get("draft_metadata")
+            or {
+                "contract_version": document_metadata.get("contract_version", "unknown"),
+                "window_metadata": document_metadata.get("window_metadata", {}),
+            },
         }
 
-    return {"content": row["content"] or "", "sections": {}, "tail_hits": []}
+    return {"content": row["content"] or "", "sections": {}, "tail_hits": [], "metadata": {}}
 
 
 def extract_entries_from_payload(draft_row, payload: dict) -> tuple[list[dict], list[dict]]:
     sections = payload.get("sections") or {}
     report_note_text = (sections.get("report_note", {}) or {}).get("plain_text", "")
-    patch_window, focus_window = derive_windows(draft_row["report_date"], report_note_text)
+    payload_metadata = payload.get("metadata") or {}
+    patch_window, focus_window = derive_windows(draft_row["report_date"], report_note_text, payload_metadata)
     extracted: list[dict] = []
     notes: list[dict] = []
 
@@ -412,7 +426,7 @@ def extract_entries_from_payload(draft_row, payload: dict) -> tuple[list[dict], 
                             "module_key": definition["key"],
                             "issue": "结构区自由文本",
                             "message": f"{definition['title']} 的 {current_path} 出现自由文本：{text[:48]}",
-                            "suggestion": "结构化区必须改成固定 6 列表格；本次迁移已忽略该段，以免继续放大脏数据。",
+                            "suggestion": "结构化区必须改成 v1 6 列或 v2 9 列表格；本次迁移已忽略该段，以免继续放大脏数据。",
                         }
                     )
                 continue
@@ -420,16 +434,44 @@ def extract_entries_from_payload(draft_row, payload: dict) -> tuple[list[dict], 
     return extracted, notes
 
 
-def derive_windows(report_date_text: str, report_note_text: str) -> tuple[tuple[date, date], tuple[date, date]]:
+def derive_windows(report_date_text: str, report_note_text: str, metadata: dict | None = None) -> tuple[tuple[date, date], tuple[date, date]]:
     report_day = date.fromisoformat(report_date_text)
     default_start = report_day - timedelta(days=2)
-    discovered_dates = extract_all_dates(report_note_text)
-    if len(discovered_dates) >= 2:
-        patch_window = (min(discovered_dates), max(discovered_dates))
-    else:
-        patch_window = (default_start, report_day)
-    focus_window = (report_day - timedelta(days=2), report_day)
+    window_metadata = (metadata or {}).get("window_metadata") or {}
+
+    patch_window = coerce_window_range(window_metadata.get("patch_window"))
+    focus_window = coerce_window_range(window_metadata.get("focus_window"))
+
+    if not patch_window:
+        discovered_dates = extract_all_dates(report_note_text)
+        if len(discovered_dates) >= 2:
+            patch_window = (min(discovered_dates), max(discovered_dates))
+        else:
+            patch_window = (default_start, report_day)
+
+    if not focus_window:
+        focus_window = (report_day - timedelta(days=2), report_day)
+
     return patch_window, focus_window
+
+
+def coerce_window_range(raw_value) -> tuple[date, date] | None:
+    if not raw_value:
+        return None
+    if isinstance(raw_value, dict):
+        values = [raw_value.get("start"), raw_value.get("end")]
+    elif isinstance(raw_value, (list, tuple)):
+        values = list(raw_value)[:2]
+    else:
+        return None
+    if len(values) < 2 or not values[0] or not values[1]:
+        return None
+    try:
+        start = date.fromisoformat(str(values[0]))
+        end = date.fromisoformat(str(values[1]))
+    except ValueError:
+        return None
+    return (min(start, end), max(start, end))
 
 
 def extract_all_dates(text: str) -> list[date]:
@@ -472,7 +514,7 @@ def extract_table_entries(
                 "module_key": definition["key"],
                 "issue": "表格列数不符",
                 "message": f"{definition['title']} 的 {subsection_path} 表格列名为 {' / '.join(headers)}",
-                "suggestion": "固定使用 6 列：标题 / 时间 / 来源层级 / 来源 / 核心内容 / 为什么值得纳入。",
+                "suggestion": "固定使用 v1 6 列或 v2 9 列模板；v2 需额外包含原始链接 / 本次新增事实 / 业务标签。",
             }
         )
         return [], notes
@@ -507,6 +549,7 @@ def extract_table_entries(
                 patch_window=patch_window,
                 focus_window=focus_window,
                 legacy_mode=(header_mode == "legacy_5"),
+                contract_version="v2" if header_mode == "contract_9" else ("v1" if header_mode == "contract_6" else "legacy_5"),
                 row_index=row_index,
             )
         )
@@ -527,6 +570,8 @@ def identify_table_header_mode(headers: list[str]) -> str | None:
     compact_headers = [item.strip() for item in headers]
     if compact_headers == DRAFT_STRUCTURED_TABLE_COLUMNS:
         return "contract_6"
+    if compact_headers == DRAFT_STRUCTURED_TABLE_COLUMNS_V2:
+        return "contract_9"
     if compact_headers == LEGACY_FIVE_COLUMN_HEADERS:
         return "legacy_5"
     return None
@@ -542,6 +587,21 @@ def map_row_to_entry_fields(headers: list[str], row: list[str], header_mode: str
             "source_name": values[3],
             "core_content": values[4],
             "why_included": values[5],
+            "source_url": "",
+            "delta_text": "",
+            "business_tags": [],
+        }
+    if header_mode == "contract_9":
+        return {
+            "title": values[0],
+            "time_text": values[1],
+            "source_level": values[2],
+            "source_name": values[3],
+            "source_url": values[4],
+            "core_content": values[5],
+            "delta_text": values[6],
+            "business_tags": normalize_business_tags(values[7]),
+            "why_included": values[8],
         }
     return {
         "title": values[0],
@@ -550,6 +610,9 @@ def map_row_to_entry_fields(headers: list[str], row: list[str], header_mode: str
         "source_name": values[2],
         "core_content": values[3],
         "why_included": values[4],
+        "source_url": "",
+        "delta_text": "",
+        "business_tags": [],
     }
 
 
@@ -562,11 +625,17 @@ def build_real_entry(
     patch_window: tuple[date, date],
     focus_window: tuple[date, date],
     legacy_mode: bool,
+    contract_version: str,
     row_index: int,
 ) -> dict:
     time_text = mapped.get("time_text", "").strip()
     source_name = mapped.get("source_name", "").strip()
     source_level = normalize_source_level(mapped.get("source_level", "").strip(), source_name)
+    source_url = (mapped.get("source_url") or "").strip() or extract_source_url(source_name)
+    delta_text = (mapped.get("delta_text") or "").strip()
+    business_tags = normalize_business_tags(mapped.get("business_tags"))
+    event_anchor = normalize_compare_text(mapped.get("event_anchor", ""))
+    canonical_title = normalize_compare_text(mapped.get("canonical_title", ""))
     event_date = extract_first_date(time_text)
     event_key = provisional_event_key(
         definition["key"],
@@ -574,6 +643,7 @@ def build_real_entry(
         time_text,
         mapped.get("core_content", ""),
         source_name,
+        canonical_title=canonical_title,
     )
     is_in_patch_window = is_date_in_window(event_date, patch_window)
     is_in_focus_window = is_date_in_window(event_date, focus_window)
@@ -582,10 +652,17 @@ def build_real_entry(
         "source_file": draft_row["original_name"],
         "source_path": draft_row["stored_path"],
         "row_index": row_index,
+        "contract_version": contract_version,
         "patch_window": [patch_window[0].isoformat(), patch_window[1].isoformat()],
         "focus_window": [focus_window[0].isoformat(), focus_window[1].isoformat()],
+        "delta_text": delta_text,
+        "business_tags": business_tags,
         "normalization_notes": [],
     }
+    if event_anchor:
+        evidence["event_anchor"] = event_anchor
+    if canonical_title:
+        evidence["canonical_title"] = canonical_title
     return {
         "origin_document_id": draft_row["id"],
         "report_date": draft_row["report_date"],
@@ -603,7 +680,7 @@ def build_real_entry(
         "event_date": event_date.isoformat() if event_date else "",
         "source_name": source_name,
         "source_title": mapped.get("title", "").strip(),
-        "source_url": extract_source_url(source_name),
+        "source_url": source_url,
         "supporting_sources_json": [],
         "core_content": mapped.get("core_content", "").strip(),
         "why_included": mapped.get("why_included", "").strip(),
@@ -911,9 +988,9 @@ def build_repaired_section_rollup(definition: dict, rows: list[dict], report_dat
     background_group_rows = latest_effective_rows(rows, "背景")
     note_group_rows = latest_note_rows(rows)
 
-    groups.append(build_entry_group(f"{definition['number']}.1 补采窗口内新增信号", 2, new_group_rows, "新增"))
-    groups.append(build_entry_group(f"{definition['number']}.2 近72小时重点新信号", 2, focus_group_rows, "重点"))
-    groups.append(build_entry_group(f"{definition['number']}.3 背景补充", 2, background_group_rows, "背景"))
+    groups.extend(build_display_entry_groups(definition["key"], f"{definition['number']}.1 补采窗口内新增信号", 2, new_group_rows, "新增"))
+    groups.extend(build_display_entry_groups(definition["key"], f"{definition['number']}.2 近72小时重点新信号", 2, focus_group_rows, "重点"))
+    groups.extend(build_display_entry_groups(definition["key"], f"{definition['number']}.3 背景补充", 2, background_group_rows, "背景"))
 
     for row in new_group_rows + focus_group_rows + background_group_rows:
         if row["entry_type"] == "real" and not row["is_deleted"]:
@@ -921,7 +998,7 @@ def build_repaired_section_rollup(definition: dict, rows: list[dict], report_dat
 
     historical_rows = canonical_historical_rows(rows, displayed_current_keys)
     if historical_rows:
-        groups.append(build_entry_group("历史保留", 2, historical_rows, "历史"))
+        groups.extend(build_display_entry_groups(definition["key"], "历史保留", 2, historical_rows, "历史"))
 
     if note_group_rows:
         groups.append(build_note_group(f"{definition['number']}.4 当前状态说明", note_group_rows))
@@ -1006,6 +1083,213 @@ def build_repaired_section_history(connection: sqlite3.Connection, report_date: 
     return history_rows
 
 
+def _entry_persistence_key(item: dict) -> tuple[str, str, str, str, str]:
+    return (
+        str(item.get("report_date") or ""),
+        str(item.get("module_key") or ""),
+        str(item.get("subsection_path") or ""),
+        str(item.get("entry_type") or ""),
+        str(item.get("event_key") or ""),
+    )
+
+
+def _group_existing_entries_by_key(rows: list[sqlite3.Row]) -> dict[tuple[str, str, str, str, str], list[dict]]:
+    grouped: dict[tuple[str, str, str, str, str], list[dict]] = defaultdict(list)
+    for row in rows:
+        record = dict(row)
+        grouped[_entry_persistence_key(record)].append(record)
+    for bucket in grouped.values():
+        bucket.sort(key=lambda item: item["id"])
+    return grouped
+
+
+def _upsert_rebuilt_entry(connection: sqlite3.Connection, run_id: int, item: dict, existing_row: dict | None) -> int:
+    payload = (
+        run_id,
+        item["origin_document_id"],
+        item["report_date"],
+        item["module_id"],
+        item["module_key"],
+        item["module_name"],
+        item["subsection_path"],
+        item["subsection_title"],
+        item["section_type"],
+        item["source_level"],
+        item["entry_type"],
+        item["event_key"],
+        item["title"],
+        item.get("time_text", ""),
+        item.get("event_date", ""),
+        item.get("source_name", ""),
+        item.get("source_title", ""),
+        item.get("source_url", ""),
+        json.dumps(item.get("supporting_sources_json", []), ensure_ascii=False),
+        item.get("core_content", ""),
+        item.get("why_included", ""),
+        item.get("note_text", ""),
+        item.get("first_seen_date", item["report_date"]),
+        item.get("last_seen_date", item["report_date"]),
+        item.get("is_in_patch_window", 0),
+        item.get("is_in_focus_window", 0),
+        item.get("display_status", "历史保留"),
+        item.get("needs_review", 0),
+        item.get("confidence_level", "中"),
+        item.get("is_current_chain", 1),
+        item.get("is_deleted", 0),
+        item.get("dedupe_rank", 0),
+        json.dumps(item.get("evidence_json", {}), ensure_ascii=False),
+    )
+    if existing_row:
+        connection.execute(
+            """
+            UPDATE entries
+            SET run_id = ?,
+                origin_document_id = ?,
+                report_date = ?,
+                module_id = ?,
+                module_key = ?,
+                module_name = ?,
+                subsection_path = ?,
+                subsection_title = ?,
+                section_type = ?,
+                source_level = ?,
+                entry_type = ?,
+                event_key = ?,
+                title = ?,
+                time_text = ?,
+                event_date = ?,
+                source_name = ?,
+                source_title = ?,
+                source_url = ?,
+                supporting_sources_json = ?,
+                core_content = ?,
+                why_included = ?,
+                note_text = ?,
+                first_seen_date = ?,
+                last_seen_date = ?,
+                is_in_patch_window = ?,
+                is_in_focus_window = ?,
+                display_status = ?,
+                needs_review = ?,
+                confidence_level = ?,
+                is_current_chain = ?,
+                is_deleted = ?,
+                dedupe_rank = ?,
+                evidence_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                *payload,
+                item.get("updated_at", now_string()),
+                existing_row["id"],
+            ),
+        )
+        return existing_row["id"]
+
+    created_at = item.get("created_at", now_string())
+    updated_at = item.get("updated_at", created_at)
+    return connection.execute(
+        """
+        INSERT INTO entries (
+            run_id, origin_document_id, report_date, module_id, module_key, module_name,
+            subsection_path, subsection_title, section_type, source_level, entry_type, event_key,
+            title, time_text, event_date, source_name, source_title, source_url, supporting_sources_json,
+            core_content, why_included, note_text, first_seen_date, last_seen_date,
+            is_in_patch_window, is_in_focus_window, display_status, needs_review,
+            confidence_level, is_current_chain, is_deleted, dedupe_rank, evidence_json,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (*payload, created_at, updated_at),
+    ).lastrowid
+
+
+def _soft_delete_unmatched_entries(connection: sqlite3.Connection, rows: list[dict]) -> None:
+    if not rows:
+        return
+    now = now_string()
+    for row in rows:
+        connection.execute(
+            """
+            UPDATE entries
+            SET is_deleted = 1,
+                is_current_chain = 0,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, row["id"]),
+        )
+
+
+def _relink_entry_marks(connection: sqlite3.Connection) -> None:
+    current_rows = connection.execute(
+        """
+        SELECT id, event_key, module_key, report_date, title
+        FROM entries
+        WHERE is_deleted = 0
+        ORDER BY report_date DESC, id DESC
+        """
+    ).fetchall()
+    latest_by_event_key: dict[str, sqlite3.Row] = {}
+    for row in current_rows:
+        event_key = str(row["event_key"] or "").strip()
+        if event_key and event_key not in latest_by_event_key:
+            latest_by_event_key[event_key] = row
+
+    mark_rows = connection.execute(
+        """
+        SELECT id, entry_id, entry_event_key, marker_identity_id
+        FROM entry_marks
+        WHERE is_active = 1
+        ORDER BY updated_at DESC, id DESC
+        """
+    ).fetchall()
+    if not mark_rows:
+        return
+
+    now = now_string()
+    seen_actor_event_keys: set[tuple[int, str]] = set()
+    for row in mark_rows:
+        event_key = str(row["entry_event_key"] or "").strip()
+        dedupe_key = (int(row["marker_identity_id"] or 0), event_key)
+        if event_key and dedupe_key in seen_actor_event_keys:
+            connection.execute(
+                """
+                UPDATE entry_marks
+                SET is_active = 0,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (now, row["id"]),
+            )
+            continue
+        if event_key:
+            seen_actor_event_keys.add(dedupe_key)
+        target = latest_by_event_key.get(event_key)
+        if not target or row["entry_id"] == target["id"]:
+            continue
+        connection.execute(
+            """
+            UPDATE entry_marks
+            SET entry_id = ?,
+                entry_module_key = ?,
+                entry_report_date = ?,
+                entry_title = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                target["id"],
+                target["module_key"],
+                target["report_date"],
+                target["title"],
+                now,
+                row["id"],
+            ),
+        )
+
+
 def persist_rebuilt_entries(
     database_path: Path,
     run_id: int,
@@ -1015,61 +1299,21 @@ def persist_rebuilt_entries(
     decisions_path: Path | None,
     migration_report_path: Path | None,
 ) -> dict:
-    with sqlite3.connect(database_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with get_connection(database_path) as connection:
         ensure_rebuild_tables(connection)
-        connection.execute("DELETE FROM entries")
+        existing_rows = connection.execute("SELECT * FROM entries ORDER BY id ASC").fetchall()
+        existing_by_key = _group_existing_entries_by_key(existing_rows)
         for item in entries:
-            connection.execute(
-                """
-                INSERT INTO entries (
-                    run_id, origin_document_id, report_date, module_id, module_key, module_name,
-                    subsection_path, subsection_title, section_type, source_level, entry_type, event_key,
-                    title, time_text, event_date, source_name, source_title, source_url, supporting_sources_json,
-                    core_content, why_included, note_text, first_seen_date, last_seen_date,
-                    is_in_patch_window, is_in_focus_window, display_status, needs_review,
-                    confidence_level, is_current_chain, is_deleted, dedupe_rank, evidence_json,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    item["origin_document_id"],
-                    item["report_date"],
-                    item["module_id"],
-                    item["module_key"],
-                    item["module_name"],
-                    item["subsection_path"],
-                    item["subsection_title"],
-                    item["section_type"],
-                    item["source_level"],
-                    item["entry_type"],
-                    item["event_key"],
-                    item["title"],
-                    item.get("time_text", ""),
-                    item.get("event_date", ""),
-                    item.get("source_name", ""),
-                    item.get("source_title", ""),
-                    item.get("source_url", ""),
-                    json.dumps(item.get("supporting_sources_json", []), ensure_ascii=False),
-                    item.get("core_content", ""),
-                    item.get("why_included", ""),
-                    item.get("note_text", ""),
-                    item.get("first_seen_date", item["report_date"]),
-                    item.get("last_seen_date", item["report_date"]),
-                    item.get("is_in_patch_window", 0),
-                    item.get("is_in_focus_window", 0),
-                    item.get("display_status", "历史保留"),
-                    item.get("needs_review", 0),
-                    item.get("confidence_level", "中"),
-                    item.get("is_current_chain", 1),
-                    item.get("is_deleted", 0),
-                    item.get("dedupe_rank", 0),
-                    json.dumps(item.get("evidence_json", {}), ensure_ascii=False),
-                    item.get("created_at", now_string()),
-                    item.get("updated_at", now_string()),
-                ),
-            )
+            existing_row = None
+            bucket = existing_by_key.get(_entry_persistence_key(item))
+            if bucket:
+                existing_row = bucket.pop(0)
+            _upsert_rebuilt_entry(connection, run_id, item, existing_row)
+
+        for bucket in existing_by_key.values():
+            _soft_delete_unmatched_entries(connection, bucket)
+
+        _relink_entry_marks(connection)
         summary = build_summary_from_entries(entries)
         connection.execute(
             """
@@ -1087,7 +1331,7 @@ def persist_rebuilt_entries(
             ),
         )
         connection.commit()
-    return summary
+        return summary
 
 
 def build_summary_from_entries(entries: list[dict]) -> dict:
@@ -1342,6 +1586,99 @@ def annotate_entry_timelines(entries: list[dict]) -> None:
         item["last_seen_date"] = dates[-1] if dates else item["report_date"]
 
 
+def get_link_row_date(row: dict) -> str:
+    event_day = extract_first_date(row.get("time_text", ""))
+    return event_day.isoformat() if event_day else ""
+
+
+def resolve_safe_link_candidates(item: dict, candidates: list[dict]) -> tuple[list[dict], str]:
+    item_date = get_entry_match_date(item)
+    item_source = get_entry_normalized_source(item)
+
+    exact_steps = [
+        (
+            "title_date_source_exact",
+            [
+                row
+                for row in candidates
+                if item_date
+                and item_source
+                and get_link_row_date(row) == item_date
+                and normalize_compare_text(row.get("source_name", "")) == item_source
+            ],
+        ),
+        (
+            "title_date_exact",
+            [row for row in candidates if item_date and get_link_row_date(row) == item_date],
+        ),
+        (
+            "title_source_exact",
+            [
+                row
+                for row in candidates
+                if item_source and normalize_compare_text(row.get("source_name", "")) == item_source
+            ],
+        ),
+        ("title_exact_unique", candidates),
+    ]
+    for mode, rows in exact_steps:
+        if len(rows) == 1:
+            return rows, mode
+        if len(rows) > 1:
+            return [], f"ambiguous_{mode}"
+    return [], "no_exact_match"
+
+
+def resolve_legacy_fuzzy_link_candidates(item: dict, grouped_registry: dict[str, list[dict]]) -> tuple[list[dict], str]:
+    if get_runtime_flag("LINKED_SOURCE_SAFE_MODE", True):
+        return [], "safe_mode_exact_only"
+    if not get_runtime_flag("ENABLE_LEGACY_FUZZY_LINK_BACKFILL", LEGACY_FUZZY_LINK_BACKFILL_ENABLED):
+        return [], "legacy_fuzzy_disabled"
+
+    current_title = get_entry_normalized_title(item)
+    if not current_title:
+        return [], "legacy_fuzzy_disabled"
+
+    threshold = float(
+        get_runtime_flag("LEGACY_FUZZY_LINK_BACKFILL_THRESHOLD", LEGACY_FUZZY_LINK_BACKFILL_THRESHOLD)
+    )
+    scored_candidates: list[tuple[float, dict]] = []
+    for key, rows in grouped_registry.items():
+        if not key:
+            continue
+        similarity = SequenceMatcher(None, current_title, key).ratio()
+        if similarity >= threshold:
+            for row in rows:
+                scored_candidates.append((similarity, row))
+    if not scored_candidates:
+        return [], "legacy_fuzzy_none"
+
+    scored_candidates.sort(
+        key=lambda pair: (
+            pair[0],
+            get_link_row_date(pair[1]),
+            ENTRY_SOURCE_LEVELS.get(pair[1].get("source_level", "C"), 1),
+        ),
+        reverse=True,
+    )
+    best_score = scored_candidates[0][0]
+    best_rows = [row for score, row in scored_candidates if score == best_score]
+    if len(best_rows) == 1:
+        return best_rows, "legacy_fuzzy_title"
+    return [], "ambiguous_legacy_fuzzy_title"
+
+
+def find_linked_match_result(item: dict, grouped_registry: dict[str, list[dict]]) -> tuple[list[dict], str]:
+    current_title = get_entry_normalized_title(item)
+    if not current_title:
+        return [], "missing_title"
+    exact_candidates = list(grouped_registry.get(current_title, []))
+    matches, mode = resolve_safe_link_candidates(item, exact_candidates)
+    if matches or mode.startswith("ambiguous_"):
+        return matches, mode
+    return resolve_legacy_fuzzy_link_candidates(item, grouped_registry)
+
+
 def enrich_entries_with_linked_sources(entries: list[dict], linked_registry: list[dict]) -> None:
     if not linked_registry:
         return
@@ -1352,17 +1689,28 @@ def enrich_entries_with_linked_sources(entries: list[dict], linked_registry: lis
     for item in entries:
         if item.get("entry_type") == "placeholder":
             continue
-        matches = find_linked_matches(item, grouped_registry)
+        item.setdefault("evidence_json", {})
+        if item.get("source_url"):
+            item["evidence_json"]["link_backfill_mode"] = "preserved_existing_source_url"
+            item["evidence_json"]["match_mode"] = "existing_source_url"
+            continue
+        matches, match_mode = find_linked_match_result(item, grouped_registry)
         if not matches:
+            item["evidence_json"]["link_backfill_mode"] = (
+                "skipped_ambiguous" if match_mode.startswith("ambiguous_") else "no_match"
+            )
+            item["evidence_json"]["match_mode"] = match_mode
             continue
         primary = matches[0]
-        if not item.get("source_url"):
-            item["source_url"] = primary.get("source_url", "")
+        item["source_url"] = primary.get("source_url", "")
         if not item.get("source_title"):
             item["source_title"] = primary.get("title", "")
-        item.setdefault("evidence_json", {})
         item["evidence_json"]["linked_match_count"] = len(matches)
         item["evidence_json"]["linked_primary_path"] = primary.get("path", "")
+        item["evidence_json"]["match_mode"] = match_mode
+        item["evidence_json"]["link_backfill_mode"] = (
+            "legacy_fuzzy_backfill" if match_mode.startswith("legacy_fuzzy_") else "exact_safe_first"
+        )
         supporting = []
         for match in matches[:5]:
             supporting.append(
@@ -1377,39 +1725,8 @@ def enrich_entries_with_linked_sources(entries: list[dict], linked_registry: lis
 
 
 def find_linked_matches(item: dict, grouped_registry: dict[str, list[dict]]) -> list[dict]:
-    candidates = grouped_registry.get(normalize_compare_text(item.get("title", "")), [])
-    if not candidates:
-        candidates = []
-        current_title = normalize_compare_text(item.get("title", ""))
-        for key, rows in grouped_registry.items():
-            if not key:
-                continue
-            similarity = SequenceMatcher(None, current_title, key).ratio()
-            if similarity >= 0.78:
-                candidates.extend(rows)
-    if not candidates:
-        return []
-    candidates.sort(
-        key=lambda row: (
-            event_similarity(
-                {
-                    "title": item.get("title", ""),
-                    "core_content": item.get("core_content", ""),
-                    "event_date": item.get("event_date", ""),
-                    "source_name": item.get("source_name", ""),
-                },
-                {
-                    "title": row.get("title", ""),
-                    "core_content": row.get("core_content", ""),
-                    "event_date": extract_first_date(row.get("time_text", "")).isoformat() if extract_first_date(row.get("time_text", "")) else "",
-                    "source_name": row.get("source_name", ""),
-                },
-            ),
-            ENTRY_SOURCE_LEVELS.get(row.get("source_level", "C"), 1),
-        ),
-        reverse=True,
-    )
-    return candidates
+    matches, _match_mode = find_linked_match_result(item, grouped_registry)
+    return matches
 
 
 def join_evidence_names(items: list[dict]) -> str:
@@ -1447,6 +1764,22 @@ def trim_row(row: list[str]) -> list[str]:
     return [cell.strip() for cell in clipped]
 
 
+def normalize_business_tags(raw_value) -> list[str]:
+    if isinstance(raw_value, list):
+        values = [str(item).strip() for item in raw_value if str(item).strip()]
+    else:
+        values = [part.strip() for part in re.split(r"[、,，/｜|；;\n]+", str(raw_value or "")) if part.strip()]
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for value in values:
+        key = BUSINESS_TAG_CANONICAL_MAP.get(normalize_compare_text(value)) or normalize_compare_text(value)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(key)
+    return normalized[:8]
+
+
 def looks_like_placeholder_text(text: str) -> bool:
     normalized = normalize_compare_text(text)
     return any(normalize_compare_text(pattern) in normalized for pattern in PLACEHOLDER_PATTERNS)
@@ -1457,9 +1790,17 @@ def looks_like_placeholder_row(mapped: dict) -> bool:
         return True
     if looks_like_placeholder_text(mapped.get("core_content", "")):
         return True
-    meaningful = [
-        value for key, value in mapped.items() if key not in {"title", "core_content"} and value and value.strip("/") and value.strip("—")
-    ]
+    meaningful = []
+    for key, value in mapped.items():
+        if key in {"title", "core_content"} or not value:
+            continue
+        if isinstance(value, list):
+            if any(str(item).strip() for item in value):
+                meaningful.append(value)
+            continue
+        stripped = str(value).strip()
+        if stripped and stripped.strip("/") and stripped.strip("—"):
+            meaningful.append(value)
     return not meaningful and looks_like_placeholder_text(f"{mapped.get('title', '')} {mapped.get('core_content', '')}")
 
 
@@ -1487,16 +1828,22 @@ def infer_confidence_level(source_level: str, needs_review: bool) -> str:
     return "中"
 
 
-def provisional_event_key(module_key: str, title: str, time_text: str, core_content: str, source_name: str) -> str:
-    primary = normalize_compare_text(title)[:28] or normalize_compare_text(core_content)[:28]
-    time_key = ""
+def provisional_event_key(
+    module_key: str,
+    title: str,
+    time_text: str,
+    core_content: str,
+    source_name: str,
+    *,
+    canonical_title: str = "",
+) -> str:
     event_day = extract_first_date(time_text)
-    if event_day:
-        time_key = event_day.isoformat()
-    elif time_text:
-        time_key = normalize_compare_text(time_text)[:12]
-    source_key = normalize_compare_text(source_name)[:12]
-    return f"{module_key}:{primary}:{time_key}:{source_key}".strip(":")
+    event_date = event_day.isoformat() if event_day else ""
+    stable_title = normalize_compare_text(canonical_title) or normalize_compare_text(title) or normalize_compare_text(core_content)
+    stable_source = normalize_compare_text(source_name)
+    fingerprint = "|".join([module_key, stable_title, event_date, stable_source])
+    digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()[:16]
+    return f"{module_key}:{digest}"
 
 
 def is_date_in_window(event_day: date | None, window: tuple[date, date]) -> bool:
@@ -1528,16 +1875,23 @@ def is_missing_minimum_fields(item: dict) -> bool:
 
 
 def find_previous_match(previous_items: list[dict], current_item: dict) -> dict | None:
+    exact_match = find_exact_event_match(previous_items, current_item)
+    if exact_match:
+        return exact_match
+
+    fuzzy_enabled = get_runtime_flag("ENABLE_LEGACY_V1_FUZZY_MATCH", LEGACY_V1_FUZZY_MATCH_ENABLED)
+    if not fuzzy_enabled or has_delta_capability(current_item):
+        return None
+
+    threshold = float(get_runtime_flag("LEGACY_V1_FUZZY_MATCH_THRESHOLD", LEGACY_V1_FUZZY_MATCH_THRESHOLD))
     candidates = []
-    for item in previous_items:
-        if item["entry_type"] != "real" or item["is_deleted"]:
-            continue
+    for item in iter_real_candidates(previous_items):
         score = event_similarity(item, current_item)
-        if score >= 0.76:
+        if score >= threshold:
             candidates.append((score, item))
     if not candidates:
         return None
-    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    candidates.sort(key=lambda pair: (pair[0], pair[1].get("report_date", "")), reverse=True)
     return candidates[0][1]
 
 
@@ -1549,7 +1903,153 @@ def event_similarity(left: dict, right: dict) -> float:
     return max(title_score * 0.7 + core_score * 0.3 + same_day_bonus + same_source_bonus, core_score)
 
 
+def get_entry_evidence(item: dict) -> dict:
+    evidence = item.get("evidence_json") or {}
+    if isinstance(evidence, str):
+        return load_json(evidence, {})
+    return evidence
+
+
+def get_entry_contract_version(item: dict) -> str:
+    return str(get_entry_evidence(item).get("contract_version") or "").strip().lower()
+
+
+def get_entry_delta_text(item: dict) -> str:
+    return str(get_entry_evidence(item).get("delta_text") or "").strip()
+
+
+def get_entry_business_tags(item: dict) -> list[str]:
+    return normalize_business_tags(get_entry_evidence(item).get("business_tags"))
+
+
+def get_runtime_flag(name: str, default):
+    if has_app_context():
+        return current_app.config.get(name, default)
+    return default
+
+
+def get_entry_event_anchor(item: dict) -> str:
+    return normalize_compare_text(get_entry_evidence(item).get("event_anchor", ""))
+
+
+def get_entry_canonical_title(item: dict) -> str:
+    return normalize_compare_text(get_entry_evidence(item).get("canonical_title", ""))
+
+
+def get_entry_normalized_title(item: dict) -> str:
+    return normalize_compare_text(item.get("title", ""))
+
+
+def get_entry_normalized_source(item: dict) -> str:
+    return normalize_compare_text(item.get("source_name", ""))
+
+
+def get_entry_match_date(item: dict) -> str:
+    event_date = (item.get("event_date") or "").strip()
+    if event_date:
+        return event_date
+    event_day = extract_first_date(item.get("time_text", ""))
+    return event_day.isoformat() if event_day else ""
+
+
+def pick_best_event_candidate(candidates: list[dict]) -> dict | None:
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (
+            item.get("report_date", ""),
+            item.get("last_seen_date", ""),
+            ENTRY_SOURCE_LEVELS.get(item.get("source_level", "C"), 1),
+            len(normalize_compare_text(item.get("core_content", ""))),
+        ),
+    )
+
+
+def iter_real_candidates(items: list[dict]) -> list[dict]:
+    return [item for item in items if item.get("entry_type") == "real" and not item.get("is_deleted")]
+
+
+def find_exact_event_match(previous_items: list[dict], current_item: dict) -> dict | None:
+    candidates = iter_real_candidates(previous_items)
+    if not candidates:
+        return None
+
+    current_anchor = get_entry_event_anchor(current_item)
+    if current_anchor:
+        anchor_matches = [item for item in candidates if get_entry_event_anchor(item) == current_anchor]
+        if anchor_matches:
+            return pick_best_event_candidate(anchor_matches)
+
+    current_canonical = get_entry_canonical_title(current_item)
+    if current_canonical:
+        canonical_matches = [item for item in candidates if get_entry_canonical_title(item) == current_canonical]
+        if canonical_matches:
+            return pick_best_event_candidate(canonical_matches)
+
+    current_title = get_entry_normalized_title(current_item)
+    current_date = get_entry_match_date(current_item)
+    current_source = get_entry_normalized_source(current_item)
+    if not current_title:
+        return None
+
+    title_matches = [item for item in candidates if get_entry_normalized_title(item) == current_title]
+    if current_date and current_source:
+        title_date_source_matches = [
+            item
+            for item in title_matches
+            if get_entry_match_date(item) == current_date and get_entry_normalized_source(item) == current_source
+        ]
+        if title_date_source_matches:
+            return pick_best_event_candidate(title_date_source_matches)
+
+    if current_date:
+        title_date_matches = [item for item in title_matches if get_entry_match_date(item) == current_date]
+        if title_date_matches:
+            return pick_best_event_candidate(title_date_matches)
+
+    if current_source:
+        title_source_matches = [
+            item for item in title_matches if get_entry_normalized_source(item) == current_source
+        ]
+        if title_source_matches:
+            return pick_best_event_candidate(title_source_matches)
+
+    if len(title_matches) == 1:
+        return title_matches[0]
+    return None
+
+
+def has_delta_capability(item: dict) -> bool:
+    evidence = get_entry_evidence(item)
+    contract_version = get_entry_contract_version(item)
+    if contract_version:
+        return contract_version == "v2"
+    return bool(str(evidence.get("delta_text") or "").strip())
+
+
+def has_new_time_node(previous_item: dict, current_item: dict) -> bool:
+    previous_dates = {value.isoformat() for value in extract_all_dates(previous_item.get("time_text", ""))}
+    current_dates = {value.isoformat() for value in extract_all_dates(current_item.get("time_text", ""))}
+    return bool(current_dates - previous_dates)
+
+
+def has_source_url_gain(previous_item: dict, current_item: dict) -> bool:
+    return not (previous_item.get("source_url") or "").strip() and bool((current_item.get("source_url") or "").strip())
+
+
 def has_meaningful_delta(previous_item: dict, current_item: dict) -> bool:
+    delta_text = get_entry_delta_text(current_item)
+    source_gain = ENTRY_SOURCE_LEVELS.get(current_item.get("source_level", "C"), 1) > ENTRY_SOURCE_LEVELS.get(previous_item.get("source_level", "C"), 1)
+    source_url_gain = has_source_url_gain(previous_item, current_item)
+    new_time_node = has_new_time_node(previous_item, current_item)
+    if delta_text:
+        return True
+    if source_gain or source_url_gain or new_time_node:
+        return True
+    if has_delta_capability(previous_item) or has_delta_capability(current_item):
+        return False
+
     core_similarity = SequenceMatcher(
         None,
         normalize_compare_text(previous_item.get("core_content", "")),
@@ -1560,8 +2060,9 @@ def has_meaningful_delta(previous_item: dict, current_item: dict) -> bool:
         normalize_compare_text(previous_item.get("why_included", "")),
         normalize_compare_text(current_item.get("why_included", "")),
     ).ratio()
-    source_gain = ENTRY_SOURCE_LEVELS.get(current_item.get("source_level", "C"), 1) > ENTRY_SOURCE_LEVELS.get(previous_item.get("source_level", "C"), 1)
-    return source_gain or core_similarity < 0.86 or why_similarity < 0.82
+    if core_similarity < 0.82:
+        return True
+    return core_similarity < 0.9 and why_similarity < 0.45
 
 
 def has_overclaimed_value(item: dict) -> bool:
@@ -1585,25 +2086,25 @@ def entry_quality_score(item: dict) -> tuple:
 
 
 def find_canonical_group(groups: list[dict], current_item: dict) -> dict | None:
-    best_match = None
-    best_score = 0.0
-    for candidate in groups:
-        score = event_similarity(candidate, current_item)
-        if candidate["module_key"] != current_item["module_key"]:
-            score -= 0.06
-        if score > best_score:
-            best_match = candidate
-            best_score = score
-    if best_score >= 0.82:
-        return best_match
-    return None
+    return find_previous_match(groups, current_item)
 
 
 def same_effective_fact(left: dict, right: dict) -> bool:
-    if event_similarity(left, right) < 0.9:
+    if left.get("event_key") and right.get("event_key") and left.get("event_key") != right.get("event_key"):
         return False
+    if has_meaningful_delta(left, right) or has_meaningful_delta(right, left):
+        return False
+    left_delta = normalize_compare_text(get_entry_delta_text(left))
+    right_delta = normalize_compare_text(get_entry_delta_text(right))
+    if left_delta != right_delta and (left_delta or right_delta):
+        return False
+    core_similarity = SequenceMatcher(
+        None,
+        normalize_compare_text(left.get("core_content", "")),
+        normalize_compare_text(right.get("core_content", "")),
+    ).ratio()
     merged_length_gap = abs(len(normalize_compare_text(left["core_content"])) - len(normalize_compare_text(right["core_content"])))
-    return merged_length_gap <= 12
+    return core_similarity >= 0.9 and merged_length_gap <= 24
 
 
 def merge_duplicate_into_canonical(canonical: dict, duplicate: dict) -> None:
@@ -1614,10 +2115,21 @@ def merge_duplicate_into_canonical(canonical: dict, duplicate: dict) -> None:
         canonical["source_name"] = duplicate["source_name"]
         canonical["source_url"] = duplicate["source_url"]
         canonical["confidence_level"] = infer_confidence_level(canonical["source_level"], bool(canonical.get("needs_review")))
+    canonical_evidence = deepcopy(get_entry_evidence(canonical))
+    duplicate_evidence = get_entry_evidence(duplicate)
+    canonical_evidence["delta_text"] = merge_text(
+        canonical_evidence.get("delta_text", ""),
+        duplicate_evidence.get("delta_text", ""),
+    )
+    merged_tags = normalize_business_tags(get_entry_business_tags(canonical) + get_entry_business_tags(duplicate))
+    canonical_evidence["business_tags"] = merged_tags
+    if not canonical.get("source_url") and duplicate.get("source_url"):
+        canonical["source_url"] = duplicate["source_url"]
     canonical["core_content"] = merge_text(canonical["core_content"], duplicate["core_content"])
     canonical["why_included"] = merge_text(canonical.get("why_included", ""), duplicate.get("why_included", ""))
     if duplicate.get("needs_review"):
         canonical["needs_review"] = 1
+    canonical["evidence_json"] = canonical_evidence
     canonical["updated_at"] = now_string()
 
 
@@ -1688,6 +2200,85 @@ def canonical_historical_rows(rows: list[dict], excluded_event_keys: set[str]) -
     return values
 
 
+def resolve_display_category_from_text(section_key: str, text: str) -> str:
+    normalized = normalize_compare_text(text or "")
+    if not normalized:
+        return ""
+    for rule in SECTION_SUBCATEGORY_RULES.get(section_key, []):
+        rule_title = rule.get("title", "")
+        if normalize_compare_text(rule_title) == normalized:
+            return rule_title
+        for keyword in rule.get("keywords", []):
+            normalized_keyword = normalize_compare_text(keyword)
+            if normalized_keyword and normalized_keyword in normalized:
+                return rule_title
+    return ""
+
+
+def resolve_display_category_from_tags(section_key: str, tags: list[str]) -> str:
+    normalized_tags = {
+        BUSINESS_TAG_CANONICAL_MAP.get(normalize_compare_text(tag)) or normalize_compare_text(tag)
+        for tag in tags
+        if normalize_compare_text(tag)
+    }
+    if not normalized_tags:
+        return ""
+    for rule in SECTION_SUBCATEGORY_RULES.get(section_key, []):
+        rule_tokens = {
+            BUSINESS_TAG_CANONICAL_MAP.get(normalize_compare_text(value)) or normalize_compare_text(value)
+            for value in [rule.get("key", ""), *rule.get("tag_keys", [])]
+            if normalize_compare_text(value)
+        }
+        if rule_tokens & normalized_tags:
+            return rule.get("title", "")
+    return ""
+
+
+def resolve_row_display_category(section_key: str, row: dict) -> str:
+    resolved = resolve_display_category_from_tags(section_key, get_entry_business_tags(row))
+    if resolved:
+        return resolved
+    fallback_text = " ".join(
+        part
+        for part in [
+            row.get("title", ""),
+            row.get("core_content", ""),
+            row.get("why_included", ""),
+            row.get("source_name", ""),
+        ]
+        if part
+    )
+    return resolve_display_category_from_text(section_key, fallback_text)
+
+
+def build_display_entry_groups(section_key: str, title: str, level: int, rows: list[dict], category: str) -> list[dict]:
+    if not rows:
+        return []
+    if section_key not in SECTION_SUBCATEGORY_RULES:
+        return [build_entry_group(title, level, rows, category)]
+
+    grouped_rows: defaultdict[str, list[dict]] = defaultdict(list)
+    ungrouped_rows: list[dict] = []
+    for row in rows:
+        if row.get("entry_type") != "real":
+            ungrouped_rows.append(row)
+            continue
+        display_category = resolve_row_display_category(section_key, row)
+        if display_category:
+            grouped_rows[display_category].append(row)
+        else:
+            ungrouped_rows.append(row)
+
+    groups: list[dict] = []
+    for rule in SECTION_SUBCATEGORY_RULES.get(section_key, []):
+        group_title = rule.get("title", "")
+        if grouped_rows.get(group_title):
+            groups.append(build_entry_group(title, level, grouped_rows[group_title], group_title))
+    if ungrouped_rows:
+        groups.append(build_entry_group(title, level, ungrouped_rows, category))
+    return groups
+
+
 def build_entry_group(title: str, level: int, rows: list[dict], category: str) -> dict:
     blocks: list[dict] = []
     for row in rows:
@@ -1702,6 +2293,8 @@ def build_note_group(title: str, rows: list[dict]) -> dict:
 
 
 def entry_to_card(row: dict) -> dict:
+    business_tags = get_entry_business_tags(row)
+    delta_text = get_entry_delta_text(row)
     tags = [row["source_level"]]
     if row["section_type"] in {"新增", "重点", "背景"}:
         tags.append(row["section_type"])
@@ -1719,6 +2312,8 @@ def entry_to_card(row: dict) -> dict:
         tags=tags,
         style="intelligence",
         source_url=row.get("source_url") or None,
+        delta_text=delta_text or None,
+        business_tags=business_tags,
         source_title=row.get("source_title") or row.get("title") or None,
         supporting_sources=row.get("supporting_sources_json") or [],
         first_seen=row.get("first_seen_date") or row.get("report_date") or None,
@@ -1730,10 +2325,13 @@ def entry_to_card(row: dict) -> dict:
             "title": row["title"],
             "time": row.get("time_text", ""),
             "source": row.get("source_name", ""),
+            "source_url": row.get("source_url", ""),
             "core_content": row.get("core_content", ""),
             "why": row.get("why_included", ""),
             "object_name": row["title"],
             "event_key": row["event_key"],
+            "delta_text": delta_text,
+            "business_tags": business_tags,
         },
     )
 

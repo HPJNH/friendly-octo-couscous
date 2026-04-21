@@ -26,6 +26,7 @@ from .mark_service import deactivate_entry_mark, upsert_entry_mark
 from .security import (
     clear_auth_failures,
     csrf_input,
+    ensure_path_within_roots,
     get_auth_lock_state,
     get_csrf_token,
     get_request_csrf_token,
@@ -53,10 +54,12 @@ from .services import (
     process_uploaded_files,
     withdraw_document,
 )
+from .url_runtime import sanitize_optional_redirect_target, sanitize_redirect_target
 from .utils import today_string
 
 
 bp = Blueprint("main", __name__)
+MOBILE_USER_AGENT_TOKENS = ("android", "iphone", "ipad", "mobile", "miui", "harmony")
 
 
 def _resolve_display_name() -> str:
@@ -78,6 +81,11 @@ def _resolve_display_name() -> str:
             continue
         return text
     return ""
+
+
+def _is_mobile_request() -> bool:
+    user_agent = (request.headers.get("User-Agent") or "").lower()
+    return any(token in user_agent for token in MOBILE_USER_AGENT_TOKENS)
 
 
 def _csrf_redirect_target(endpoint: str) -> str:
@@ -370,12 +378,16 @@ def render_day_page(report_date: str, is_home: bool):
         viewer_role=access_identity["role"] if access_identity else current_access_role(),
     )
     layout = get_layout_context(report_date)
+    current_role = access_identity["role"] if access_identity else current_access_role()
+    is_mobile_home = bool(is_home and _is_mobile_request())
     return render_template(
         "day.html",
         snapshot=snapshot,
         recent_days=get_recent_days(),
         current_page="home",
         is_home=is_home,
+        is_mobile_home=is_mobile_home,
+        home_surface_role="admin" if current_role == "admin" else "viewer",
         **layout,
     )
 
@@ -405,8 +417,13 @@ def export_day_pdf(report_date: str):
 @access_required
 def download_day_pdf(report_date: str):
     result = create_day_pdf_export(report_date)
-    return send_file(
+    download_path = ensure_path_within_roots(
         result["download_path"],
+        [current_app.config["EXPORTS_ROOT"]],
+        label="PDF 导出",
+    )
+    return send_file(
+        download_path,
         as_attachment=True,
         download_name=result["filename"],
         mimetype="application/pdf",
@@ -644,9 +661,9 @@ def entry_mark_upsert(entry_id: int):
     identity = get_current_access_identity()
     if not identity:
         flash({"title": "标记失败", "body": "当前访问资格已失效，请重新登录后再试。"}, "error")
-        return redirect(sanitize_absolute_next(request.form.get("next")) or url_for("main.index"))
+        return redirect(build_safe_next(request.form.get("next"), url_for("main.index")))
 
-    next_url = sanitize_absolute_next(request.form.get("next")) or request.referrer or url_for("main.index")
+    next_url = build_safe_next(request.form.get("next"), url_for("main.index"))
     try:
         result = upsert_entry_mark(
             entry_id=entry_id,
@@ -681,9 +698,9 @@ def entry_mark_deactivate(mark_id: int):
     identity = get_current_access_identity()
     if not identity:
         flash({"title": "取消失败", "body": "当前访问资格已失效，请重新登录后再试。"}, "error")
-        return redirect(sanitize_absolute_next(request.form.get("next")) or url_for("main.index"))
+        return redirect(build_safe_next(request.form.get("next"), url_for("main.index")))
 
-    next_url = sanitize_absolute_next(request.form.get("next")) or request.referrer or url_for("main.index")
+    next_url = build_safe_next(request.form.get("next"), url_for("main.index"))
     try:
         result = deactivate_entry_mark(
             mark_id=mark_id,
@@ -726,12 +743,8 @@ def debug_sections(report_date: str):
 
 
 def sanitize_next_url(next_url: str | None, report_date: str) -> str:
-    if next_url and next_url.startswith("/"):
-        return next_url
-    return url_for("main.day", report_date=report_date)
+    return sanitize_redirect_target(next_url, url_for("main.day", report_date=report_date))
 
 
 def sanitize_absolute_next(next_url: str | None) -> str | None:
-    if next_url and next_url.startswith("/"):
-        return next_url
-    return None
+    return sanitize_optional_redirect_target(next_url)

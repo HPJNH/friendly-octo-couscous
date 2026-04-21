@@ -53,6 +53,7 @@ def main() -> None:
                 SELECT id
                 FROM entries
                 WHERE is_deleted = 0
+                  AND entry_type = 'real'
                 ORDER BY report_date DESC, id DESC
                 LIMIT 1
                 """

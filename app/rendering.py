@@ -5,14 +5,17 @@ import json
 import re
 from typing import Any
 
-from .constants import STATUS_CLASS_MAP
+from .constants import BUSINESS_TAG_CANONICAL_MAP, STATUS_CLASS_MAP
 from .utils import normalize_compare_text
 
 
 FIELD_ALIASES = {
     "title": ["标题", "事项", "主题", "名称", "对象名称", "账号", "账号/对象名称"],
     "time": ["时间", "日期", "发布时间", "监测时间"],
+    "source_level": ["来源层级", "来源级别"],
     "source": ["来源", "出处", "信息来源", "渠道"],
+    "source_url": ["原始链接", "原文链接"],
+    "delta_text": ["本次新增事实", "新增事实"],
     "info_type": ["信息类型", "类型", "类别"],
     "content_type": ["内容类型"],
     "direction": ["观察方向", "方向"],
@@ -20,6 +23,7 @@ FIELD_ALIASES = {
     "why": ["为什么值得纳入", "为什么重要", "纳入原因", "观察价值", "为什么值得关注"],
     "value": ["观察价值", "对我方意义", "价值", "研判价值"],
     "object_name": ["对象名称", "对象", "账号名称", "主体"],
+    "business_tags": ["业务标签", "赛道标签", "业务赛道标签"],
     "keywords": ["高频词", "关键词", "标签"],
     "activity_mechanism": ["活动机制", "机制"],
     "price_clues": ["价格线索", "价格", "价格带"],
@@ -36,6 +40,24 @@ def text_or_empty(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()
     return str(value).strip()
+
+
+def normalize_business_tags(raw_value: Any) -> list[str]:
+    if isinstance(raw_value, list):
+        values = [text_or_empty(item) for item in raw_value if text_or_empty(item)]
+    else:
+        values = [part.strip() for part in re.split(r"[、,，/｜|；;\n\r]+", str(raw_value or "")) if part.strip()]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        token = BUSINESS_TAG_CANONICAL_MAP.get(normalize_compare_text(value)) or normalize_compare_text(value)
+        token = text_or_empty(token)
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    return normalized[:8]
 
 
 def parse_supporting_source_items(value: Any) -> list[Any]:
@@ -142,6 +164,14 @@ def normalize_card_evidence(card: dict[str, Any]) -> dict[str, Any]:
     card["source"] = text_or_empty(card.get("source"))
     card["source_url"] = text_or_empty(card.get("source_url"))
     card["source_title"] = text_or_empty(card.get("source_title")) or card["title"]
+    card["delta_text"] = text_or_empty(card.get("delta_text"))
+    card["business_tags"] = normalize_business_tags(card.get("business_tags"))
+    compare_meta = card.get("compare_meta") if isinstance(card.get("compare_meta"), dict) else {}
+    compare_meta["delta_text"] = text_or_empty(compare_meta.get("delta_text")) or card["delta_text"]
+    compare_meta["business_tags"] = normalize_business_tags(compare_meta.get("business_tags") or card["business_tags"])
+    if card["source_url"] and not text_or_empty(compare_meta.get("source_url")):
+        compare_meta["source_url"] = card["source_url"]
+    card["compare_meta"] = compare_meta
 
     raw_items = parse_supporting_source_items(card.get("supporting_sources"))
     raw_source_count = len(raw_items)
@@ -382,22 +412,31 @@ def extract_cards_from_table(headers: list[str], rows: list[list[str]], status: 
                 continue
 
             tags = build_card_tags(row_map)
+            business_tags = normalize_business_tags(row_map.get("business_tags"))
+            delta_text = row_map.get("delta_text", "")
             cards.append(
                 build_card(
                     title=title,
                     status=status,
                     time=row_map.get("time"),
                     source=row_map.get("source"),
+                    source_url=row_map.get("source_url"),
                     core_content=core_content,
                     why=row_map.get("why") or row_map.get("value"),
                     tags=tags,
+                    delta_text=delta_text,
+                    business_tags=business_tags,
                     compare_meta={
                         "title": title,
                         "time": row_map.get("time", ""),
                         "source": row_map.get("source", ""),
+                        "source_url": row_map.get("source_url", ""),
+                        "source_level": row_map.get("source_level", ""),
                         "object_name": row_map.get("object_name", ""),
                         "core_content": core_content,
                         "why": row_map.get("why") or row_map.get("value", ""),
+                        "delta_text": delta_text,
+                        "business_tags": business_tags,
                         "tags": tags,
                     },
                 )
@@ -416,6 +455,16 @@ def map_table_headers(headers: list[str]) -> dict[int, str | None]:
     for index, header in enumerate(headers):
         normalized = normalize_compare_text(header)
         matched_key = None
+
+        for key, aliases in FIELD_ALIASES.items():
+            if any(normalized == normalize_compare_text(alias) for alias in aliases):
+                matched_key = key
+                break
+
+        if matched_key:
+            mapping[index] = matched_key
+            continue
+
         for key, aliases in FIELD_ALIASES.items():
             if any(normalize_compare_text(alias) in normalized or normalized in normalize_compare_text(alias) for alias in aliases):
                 matched_key = key
@@ -520,6 +569,8 @@ def build_card(
     tags: list[str] | None = None,
     style: str = "intelligence",
     source_url: str | None = None,
+    delta_text: str | None = None,
+    business_tags: list[str] | None = None,
     source_title: str | None = None,
     supporting_sources: Any = None,
     first_seen: str | None = None,
@@ -537,6 +588,8 @@ def build_card(
         "source": source,
         "source_url": source_url,
         "source_title": source_title or clean_title,
+        "delta_text": delta_text or "",
+        "business_tags": business_tags or [],
         "supporting_sources": supporting_sources,
         "first_seen": first_seen,
         "last_seen": last_seen,

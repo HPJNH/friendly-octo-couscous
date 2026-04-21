@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% from "_mark_macros.html" import entry_mark_panel with context %}
 
-{% macro section_entry_card(section, compact=false) -%}
+{% macro section_entry_card(section, compact=false, show_kicker=true) -%}
 <article class="section-card{% if compact %} spotlight-card{% endif %}{% if section.has_manual_marks %} has-section-marks{% endif %}">
     <div class="card-top">
         <div>
-            {% if section.display_kicker %}
+            {% if show_kicker and section.display_kicker %}
                 <p class="section-kicker">{{ section.display_kicker }}</p>
             {% endif %}
             <h4>{{ section.display_title }}</h4>
@@ -39,6 +39,13 @@
                             {% endfor %}
                         </div>
                     {% endif %}
+                    {% if preview.tags %}
+                        <div class="section-preview-meta">
+                            {% for tag in preview.tags %}
+                                <span class="meta-chip soft">{{ tag }}</span>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
                     <p class="card-excerpt">{{ preview.body }}</p>
                     {% if preview.why %}
                         <p class="section-preview-why">重点缘由：{{ preview.why }}</p>
@@ -63,7 +70,12 @@
 <section class="hero-card welcome-hero welcome-hero-reading">
     <div class="welcome-hero-main">
         <div class="welcome-copy">
-            <h3>{{ "欢迎回来，" ~ display_name if display_name else "欢迎回来" }}</h3>
+            <h3 class="welcome-heading">
+                <span class="welcome-heading-prefix">欢迎回来，</span>
+                {% if display_name %}
+                    <span class="welcome-heading-name">{{ display_name }}</span>
+                {% endif %}
+            </h3>
             <p class="hero-subtitle">以下是今日值得关注的行业动向</p>
             <div class="welcome-meta welcome-meta-minimal">
                 <span class="info-chip muted">当前有效版本 {{ snapshot.overview.current_draft_date or snapshot.report_date }}</span>
@@ -79,12 +91,12 @@
 <section class="page-card workbench-shortcuts-panel">
     <div class="section-header">
         <div>
-            <h3>快速进入今日阅读</h3>
+            <h3>工作台</h3>
         </div>
     </div>
     <div class="core-entry-grid">
         {% for item in snapshot.workbench_shortcuts %}
-            <a class="workbench-entry-card{% if loop.first %} primary-entry{% endif %}" href="{{ item.href }}">
+            <a class="workbench-entry-card{% if loop.first %} primary-entry{% endif %}" href="{{ '#history-archive' if item.key == 'history_archive' else item.href }}">
                 <h4>{{ item.title }}</h4>
                 {% if item.key == 'today_focus' %}
                     <span class="entry-meta">当前聚合 {{ snapshot.overview.today_focus_sections }} 个重点入口</span>
@@ -100,13 +112,12 @@
     </div>
 </section>
 
-<section class="dashboard-workbench">
+<section class="dashboard-workbench dashboard-workbench-focus">
     <div class="workbench-main">
         <section id="today-focus" class="page-card spotlight-stage">
             <div class="section-header">
                 <div>
-                    <p class="section-kicker">今日重点</p>
-                    <h3>优先阅读今天最值得先看的行业动向</h3>
+                    <h3>今日重点</h3>
                 </div>
             </div>
             {% if snapshot.today_focus_sections %}
@@ -120,59 +131,6 @@
                     <p>当前没有可供优先阅读的重点板块。</p>
                 </div>
             {% endif %}
-        </section>
-
-        <section id="today-new" class="page-card spotlight-stage">
-            <div class="section-header">
-                <div>
-                    <p class="section-kicker">今日新增</p>
-                    <h3>今天新增和变化最集中的阅读入口</h3>
-                </div>
-            </div>
-            {% if snapshot.today_new_sections %}
-                <div class="section-grid">
-                    {% for section in snapshot.today_new_sections %}
-                        {{ section_entry_card(section) }}
-                    {% endfor %}
-                </div>
-            {% else %}
-                <div class="empty-panel">
-                    <p>本期暂无新增。</p>
-                </div>
-            {% endif %}
-        </section>
-
-        <section id="recent-versions" class="page-card recent-versions-panel">
-            <div class="section-header">
-                <div>
-                    <p class="section-kicker">近期变化</p>
-                    <h3>从最近几个版本继续追踪变化</h3>
-                </div>
-                <a class="ghost-button" href="{{ url_for('main.history') }}">查看完整历史</a>
-            </div>
-
-            <div class="history-list workspace-history-list">
-                {% if recent_days %}
-                    {% for day in recent_days[:4] %}
-                        <a class="history-card" href="{{ url_for('main.day', report_date=day.report_date) }}">
-                            <div>
-                                <h4>{{ day.report_date }}</h4>
-                                <p>底稿：{{ '已上传' if day.has_draft else '未上传' }}</p>
-                                <p>启用 {{ day.draft_versions.get('active', 0) }} / 撤回 {{ day.draft_versions.get('withdrawn', 0) }} / 归档 {{ day.draft_versions.get('archived', 0) }}</p>
-                            </div>
-                            <div class="history-tags">
-                                {% for pill in day.display_status_pills %}
-                                    <span class="status-pill {{ pill.class }}">{{ pill.label }} {{ pill.count }}</span>
-                                {% endfor %}
-                            </div>
-                        </a>
-                    {% endfor %}
-                {% else %}
-                    <div class="empty-panel">
-                        <p>历史记录暂时为空。</p>
-                    </div>
-                {% endif %}
-            </div>
         </section>
     </div>
 
@@ -221,11 +179,83 @@
     </aside>
 </section>
 
+<section id="today-new" class="page-card spotlight-stage stage-full-width">
+    <div class="section-header">
+        <div>
+            <h3>今日新增</h3>
+        </div>
+    </div>
+    {% if snapshot.today_new_sections %}
+        <div class="section-grid stage-grid-single">
+            {% for section in snapshot.today_new_sections %}
+                {{ section_entry_card(section) }}
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="empty-panel">
+            <p>本期暂无新增。</p>
+        </div>
+    {% endif %}
+</section>
+
+<section id="recent-versions" class="page-card recent-versions-panel stage-full-width">
+    <div class="section-header">
+        <div>
+            <h3>近期变化</h3>
+        </div>
+    </div>
+
+    <div class="history-list workspace-history-list">
+        {% if recent_days %}
+            {% for day in recent_days[:4] %}
+                <a class="history-card" href="{{ url_for('main.day', report_date=day.report_date) }}">
+                    <div>
+                        <h4>{{ day.report_date }}</h4>
+                        <p>底稿：{{ '已上传' if day.has_draft else '未上传' }}</p>
+                        <p>启用 {{ day.draft_versions.get('active', 0) }} / 撤回 {{ day.draft_versions.get('withdrawn', 0) }} / 归档 {{ day.draft_versions.get('archived', 0) }}</p>
+                    </div>
+                    <div class="history-tags">
+                        {% for pill in day.display_status_pills %}
+                            <span class="status-pill {{ pill.class }}">{{ pill.label }} {{ pill.count }}</span>
+                        {% endfor %}
+                    </div>
+                </a>
+            {% endfor %}
+        {% else %}
+            <div class="empty-panel">
+                <p>历史记录暂时为空。</p>
+            </div>
+        {% endif %}
+    </div>
+</section>
+
+<section id="history-archive" class="page-card history-archive-stage stage-compact-width">
+    <div class="section-header">
+        <div>
+            <h3>历史归档</h3>
+            <p class="section-description">进入完整历史时间线，查看累计版本轨迹与归档留存。</p>
+        </div>
+        <a class="ghost-button" href="{{ url_for('main.history') }}">查看完整历史</a>
+    </div>
+
+    <div class="history-archive-summary">
+        <article class="history-archive-card">
+            <span class="meta-label">当前有效版本</span>
+            <strong>{{ snapshot.overview.current_draft_date or snapshot.report_date }}</strong>
+            <p>当前首页继续保留最近版本变化，完整时间线归档入口下沉到独立历史页。</p>
+        </article>
+        <article class="history-archive-card">
+            <span class="meta-label">最近回看窗口</span>
+            <strong>{{ recent_days|length }} 个版本</strong>
+            <p>需要查看更早版本、完整状态轨迹或连续历史时，请进入完整历史页。</p>
+        </article>
+    </div>
+</section>
+
 <section id="reading-topics" class="page-card section-stage">
     <div class="section-header">
         <div>
-            <p class="section-kicker">阅读主题</p>
-            <h3>按固定阅读分类浏览今日情报</h3>
+            <h3>阅读赛道</h3>
         </div>
         <div class="status-group">
             {% for pill in snapshot.status_pills %}
@@ -235,17 +265,16 @@
     </div>
 
     {% for group in snapshot.section_groups %}
-        <section id="{{ group.anchor_id }}" class="section-cluster{% if group.key == 'reading_note' %} section-cluster-muted{% endif %}{% if not loop.first %} section-cluster-follow{% endif %}">
+        <section id="{{ group.anchor_id }}" class="section-cluster{% if not loop.first %} section-cluster-follow{% endif %}">
             <div class="section-header">
                 <div>
-                    <p class="section-kicker">{{ group.title }}</p>
                     <h3>{{ group.title }}</h3>
                 </div>
             </div>
 
             <div class="section-grid">
                 {% for section in group.sections %}
-                    {{ section_entry_card(section) }}
+                    {{ section_entry_card(section, false, false) }}
                 {% endfor %}
             </div>
         </section>

@@ -17,7 +17,7 @@ MARK_TYPE_LABELS = {
 def _normalize_note(note: str | None) -> str:
     value = " ".join(str(note or "").strip().split())
     if len(value) > 80:
-        raise ValueError("重点摘录请尽量控制在 80 个字以内，方便其他成员快速阅读。")
+        raise ValueError("重点摘要请尽量控制在 80 个字以内，方便其他成员快速阅读。")
     return value
 
 
@@ -40,6 +40,10 @@ def _normalize_mark_row(row, *, viewer_identity_id: int | None, viewer_role: str
     return {
         "id": row["id"],
         "entry_id": row["entry_id"],
+        "entry_event_key": row["entry_event_key"] or "",
+        "entry_module_key": row["entry_module_key"] or "",
+        "entry_report_date": row["entry_report_date"] or "",
+        "entry_title": row["entry_title"] or row["resolved_entry_title"] or "",
         "marker_identity_id": row["marker_identity_id"],
         "marker_label": row["marker_label"] or "成员",
         "marker_role": row["marker_role"] or "viewer",
@@ -53,6 +57,49 @@ def _normalize_mark_row(row, *, viewer_identity_id: int | None, viewer_role: str
     }
 
 
+def _load_entry_rows(connection, entry_ids: list[int]) -> dict[int, object]:
+    placeholders = ",".join("?" for _ in entry_ids)
+    rows = connection.execute(
+        f"""
+        SELECT id, event_key, module_key, report_date, title
+        FROM entries
+        WHERE id IN ({placeholders})
+        """,
+        tuple(entry_ids),
+    ).fetchall()
+    return {row["id"]: row for row in rows}
+
+
+def _load_mark_rows(connection, entry_ids: list[int], event_keys: list[str]):
+    params: list[object] = []
+    where_clauses: list[str] = []
+    if entry_ids:
+        where_clauses.append(f"m.entry_id IN ({','.join('?' for _ in entry_ids)})")
+        params.extend(entry_ids)
+    if event_keys:
+        where_clauses.append(f"m.entry_event_key IN ({','.join('?' for _ in event_keys)})")
+        params.extend(event_keys)
+    if not where_clauses:
+        return []
+
+    return connection.execute(
+        f"""
+        SELECT
+            m.*,
+            ai.label AS marker_label,
+            ai.role AS marker_role,
+            COALESCE(e.title, m.entry_title, '') AS resolved_entry_title
+        FROM entry_marks m
+        LEFT JOIN access_identities ai ON ai.id = m.marker_identity_id
+        LEFT JOIN entries e ON e.id = m.entry_id
+        WHERE m.is_active = 1
+          AND ({' OR '.join(where_clauses)})
+        ORDER BY m.updated_at DESC, m.id DESC
+        """,
+        tuple(params),
+    ).fetchall()
+
+
 def fetch_entry_mark_summaries(
     entry_ids: Iterable[int],
     *,
@@ -63,28 +110,33 @@ def fetch_entry_mark_summaries(
     if not normalized_ids:
         return {}
 
-    placeholders = ",".join("?" for _ in normalized_ids)
     with get_connection(current_app.config["DATABASE_PATH"]) as connection:
-        rows = connection.execute(
-            f"""
-            SELECT
-                m.*,
-                ai.label AS marker_label,
-                ai.role AS marker_role
-            FROM entry_marks m
-            LEFT JOIN access_identities ai ON ai.id = m.marker_identity_id
-            WHERE m.entry_id IN ({placeholders})
-              AND m.is_active = 1
-            ORDER BY m.updated_at DESC, m.id DESC
-            """,
-            tuple(normalized_ids),
-        ).fetchall()
+        entry_rows = _load_entry_rows(connection, normalized_ids)
+        event_keys = sorted(
+            {
+                str(row["event_key"] or "").strip()
+                for row in entry_rows.values()
+                if str(row["event_key"] or "").strip()
+            }
+        )
+        rows = _load_mark_rows(connection, normalized_ids, event_keys)
+
+    event_key_to_entry_ids: dict[str, list[int]] = defaultdict(list)
+    for entry_id, row in entry_rows.items():
+        event_key = str(row["event_key"] or "").strip()
+        if event_key:
+            event_key_to_entry_ids[event_key].append(entry_id)
 
     grouped: dict[int, list[dict]] = defaultdict(list)
+    seen_mark_ids: dict[int, set[int]] = defaultdict(set)
     for row in rows:
-        grouped[row["entry_id"]].append(
-            _normalize_mark_row(row, viewer_identity_id=viewer_identity_id, viewer_role=viewer_role)
-        )
+        normalized = _normalize_mark_row(row, viewer_identity_id=viewer_identity_id, viewer_role=viewer_role)
+        candidate_entry_ids = event_key_to_entry_ids.get(normalized["entry_event_key"]) or [normalized["entry_id"]]
+        for entry_id in candidate_entry_ids:
+            if not entry_id or normalized["id"] in seen_mark_ids[entry_id]:
+                continue
+            grouped[entry_id].append(normalized)
+            seen_mark_ids[entry_id].add(normalized["id"])
 
     summaries: dict[int, dict] = {}
     for entry_id in normalized_ids:
@@ -142,7 +194,7 @@ def upsert_entry_mark(
     with get_connection(current_app.config["DATABASE_PATH"]) as connection:
         entry_row = connection.execute(
             """
-            SELECT id, title, module_key, report_date
+            SELECT id, title, module_key, report_date, event_key
             FROM entries
             WHERE id = ?
               AND is_deleted = 0
@@ -169,24 +221,42 @@ def upsert_entry_mark(
             """
             SELECT *
             FROM entry_marks
-            WHERE entry_id = ?
-              AND marker_identity_id = ?
+            WHERE marker_identity_id = ?
+              AND (
+                  (entry_event_key = ? AND ? != '')
+                  OR entry_id = ?
+              )
             LIMIT 1
             """,
-            (entry_id, marker_identity_id),
+            (marker_identity_id, entry_row["event_key"], entry_row["event_key"], entry_id),
         ).fetchone()
 
         if existing:
             connection.execute(
                 """
                 UPDATE entry_marks
-                SET mark_type = ?,
+                SET entry_id = ?,
+                    entry_event_key = ?,
+                    entry_module_key = ?,
+                    entry_report_date = ?,
+                    entry_title = ?,
+                    mark_type = ?,
                     note = ?,
                     is_active = 1,
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (clean_mark_type, clean_note, now, existing["id"]),
+                (
+                    entry_row["id"],
+                    entry_row["event_key"],
+                    entry_row["module_key"],
+                    entry_row["report_date"],
+                    entry_row["title"],
+                    clean_mark_type,
+                    clean_note,
+                    now,
+                    existing["id"],
+                ),
             )
             mark_id = existing["id"]
             action = "updated"
@@ -195,15 +265,30 @@ def upsert_entry_mark(
                 """
                 INSERT INTO entry_marks (
                     entry_id,
+                    entry_event_key,
+                    entry_module_key,
+                    entry_report_date,
+                    entry_title,
                     marker_identity_id,
                     mark_type,
                     note,
                     is_active,
                     created_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, 1, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                 """,
-                (entry_id, marker_identity_id, clean_mark_type, clean_note, now, now),
+                (
+                    entry_id,
+                    entry_row["event_key"],
+                    entry_row["module_key"],
+                    entry_row["report_date"],
+                    entry_row["title"],
+                    marker_identity_id,
+                    clean_mark_type,
+                    clean_note,
+                    now,
+                    now,
+                ),
             ).lastrowid
             action = "created"
 
@@ -212,6 +297,7 @@ def upsert_entry_mark(
     return {
         "id": mark_id,
         "entry_id": entry_row["id"],
+        "entry_event_key": entry_row["event_key"],
         "entry_title": entry_row["title"],
         "module_key": entry_row["module_key"],
         "report_date": entry_row["report_date"],
@@ -236,11 +322,11 @@ def deactivate_entry_mark(
             """
             SELECT
                 m.*,
-                e.title AS entry_title,
-                e.module_key,
-                e.report_date
+                e.title AS live_entry_title,
+                e.module_key AS live_module_key,
+                e.report_date AS live_report_date
             FROM entry_marks m
-            JOIN entries e ON e.id = m.entry_id
+            LEFT JOIN entries e ON e.id = m.entry_id
             WHERE m.id = ?
             LIMIT 1
             """,
@@ -266,9 +352,10 @@ def deactivate_entry_mark(
     return {
         "id": row["id"],
         "entry_id": row["entry_id"],
-        "entry_title": row["entry_title"],
-        "module_key": row["module_key"],
-        "report_date": row["report_date"],
+        "entry_event_key": row["entry_event_key"] or "",
+        "entry_title": row["live_entry_title"] or row["entry_title"] or "",
+        "module_key": row["live_module_key"] or row["entry_module_key"] or "",
+        "report_date": row["live_report_date"] or row["entry_report_date"] or "",
         "marker_identity_id": row["marker_identity_id"],
         "mark_type": row["mark_type"] or "focus",
     }

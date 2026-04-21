@@ -10,45 +10,117 @@ const sidebar = document.querySelector(".sidebar");
 const viewModeButtons = document.querySelectorAll("[data-view-mode-option]");
 const viewModeLabels = document.querySelectorAll("[data-view-mode-label]");
 const viewModeNotes = document.querySelectorAll("[data-view-mode-note]");
-const viewModeMenuLabels = document.querySelectorAll("[data-view-mode-menu]");
 const menuLinks = document.querySelectorAll("[data-menu-link]");
-const primaryNavLinks = document.querySelectorAll("[data-nav-group='primary']");
+const navLinks = document.querySelectorAll("[data-nav-group][data-nav-key]");
 const sidebarFolds = document.querySelectorAll("[data-sidebar-fold]");
 
 let lockedScrollY = 0;
+let scrollSpyPrimaryKey = "";
+let scrollSpySectionId = "";
 
 const resolveAutoViewMode = () => (window.innerWidth <= MOBILE_BREAKPOINT ? "mobile" : "desktop");
 const isMobileView = () => root.dataset.viewMode === "mobile";
 const getCurrentPage = () => body.dataset.currentPage || "";
 const getCurrentHash = () => (window.location.hash || "").replace(/^#/, "");
+const getCurrentSectionKey = () => body.dataset.currentSectionKey || "";
+const getCurrentReadingKey = () => body.dataset.currentReadingKey || "";
+const isDashboardHomePage = () => {
+    const page = getCurrentPage();
+    const path = window.location.pathname || "/";
+    return page === "home" || path === "/" || path.startsWith("/day/");
+};
 
-const resolvePrimaryNavKey = () => {
+const PRIMARY_HASH_MAP = {
+    "today-focus": "today_focus",
+    "today-new": "today_new",
+    "reading-category-theme_track": "theme_track",
+    "recent-versions": "recent_changes",
+    "history-archive": "history_archive",
+};
+
+const HOME_SCROLL_SPY_SECTIONS = [
+    { id: "today-focus", key: "today_focus" },
+    { id: "today-new", key: "today_new" },
+    { id: "recent-versions", key: "recent_changes" },
+    { id: "history-archive", key: "history_archive" },
+];
+
+const BOTTOM_PAGE_MAP = {
+    history: "history",
+    library: "library",
+    upload: "upload",
+    access_manage: "access_manage",
+    access_change: "access_change",
+    debug: "debug",
+};
+
+const NAV_GROUP_FIELD_MAP = {
+    primary: "primaryKey",
+    reading: "readingKey",
+    secondary: "secondaryKey",
+    bottom: "bottomKey",
+};
+
+const resolveActiveNavState = () => {
     const page = getCurrentPage();
     const path = window.location.pathname || "/";
     const hash = getCurrentHash();
-    const hashMap = {
-        "today-focus": "today_focus",
-        "today-new": "today_new",
-        "reading-category-theme_track": "theme_track",
-        "recent-versions": "recent_changes",
+    const readingKey = getCurrentReadingKey();
+    const sectionKey = getCurrentSectionKey();
+    const state = {
+        primaryKey: "",
+        readingKey: "",
+        secondaryKey: "",
+        bottomKey: "",
     };
 
-    if (page === "history" || path.startsWith("/history")) {
-        return "history_archive";
-    }
     if (page === "home" || path === "/" || path.startsWith("/day/")) {
-        return hashMap[hash] || "today_focus";
+        if (hash.startsWith("reading-category-")) {
+            const hashReadingKey = hash.replace(/^reading-category-/, "");
+            if (hashReadingKey === "reading_note") {
+                state.secondaryKey = "reading_note";
+            } else {
+                state.readingKey = hashReadingKey;
+                if (hashReadingKey === "theme_track") {
+                    state.primaryKey = "theme_track";
+                }
+            }
+        } else {
+            state.primaryKey = scrollSpyPrimaryKey || PRIMARY_HASH_MAP[hash] || "today_focus";
+        }
     }
-    return "";
+
+    if (page === "history" || path.startsWith("/history")) {
+        state.primaryKey = "history_archive";
+    }
+
+    if (page === "section") {
+        if (sectionKey === "report_note" || readingKey === "reading_note") {
+            state.secondaryKey = "reading_note";
+        } else {
+            state.readingKey = readingKey;
+        }
+        if (readingKey === "theme_track") {
+            state.primaryKey = "theme_track";
+        }
+    }
+
+    if (BOTTOM_PAGE_MAP[page]) {
+        state.bottomKey = BOTTOM_PAGE_MAP[page];
+    }
+
+    return state;
 };
 
-const syncPrimaryNavActiveState = () => {
-    if (!primaryNavLinks.length) {
+const syncActiveNavState = () => {
+    if (!navLinks.length) {
         return;
     }
-    const activeKey = resolvePrimaryNavKey();
-    primaryNavLinks.forEach((link) => {
-        const isActive = !!activeKey && link.dataset.navKey === activeKey;
+    const state = resolveActiveNavState();
+    navLinks.forEach((link) => {
+        const group = link.dataset.navGroup || "";
+        const groupField = NAV_GROUP_FIELD_MAP[group];
+        const isActive = !!groupField && state[groupField] === link.dataset.navKey;
         link.classList.toggle("active", isActive);
         if (isActive) {
             link.setAttribute("aria-current", "page");
@@ -56,6 +128,101 @@ const syncPrimaryNavActiveState = () => {
             link.removeAttribute("aria-current");
         }
     });
+};
+
+const setHomeScrollSpyState = (primaryKey, sectionId, updateHash = false) => {
+    if (!primaryKey) {
+        return;
+    }
+    scrollSpyPrimaryKey = primaryKey;
+    scrollSpySectionId = sectionId || "";
+    if (
+        updateHash &&
+        sectionId &&
+        isDashboardHomePage() &&
+        !getCurrentHash().startsWith("reading-category-") &&
+        window.location.hash !== `#${sectionId}`
+    ) {
+        const nextUrl = `${window.location.pathname}${window.location.search}#${sectionId}`;
+        window.history.replaceState(window.history.state, "", nextUrl);
+    }
+    syncActiveNavState();
+};
+
+const bindHomePrimaryScrollSpy = () => {
+    if (!isDashboardHomePage()) {
+        return;
+    }
+
+    const trackedSections = HOME_SCROLL_SPY_SECTIONS
+        .map((item) => {
+            const element = document.getElementById(item.id);
+            return element ? { ...item, element } : null;
+        })
+        .filter(Boolean);
+
+    if (!trackedSections.length) {
+        return;
+    }
+
+    const measureActiveSection = (updateHash = false) => {
+        const offset = Math.max(128, Math.min(window.innerHeight * 0.22, 220));
+        let activeSection = trackedSections[0];
+
+        trackedSections.forEach((section) => {
+            const rect = section.element.getBoundingClientRect();
+            if (rect.top - offset <= 0) {
+                activeSection = section;
+            }
+        });
+
+        if (!activeSection) {
+            return;
+        }
+        if (activeSection.key === scrollSpyPrimaryKey && activeSection.id === scrollSpySectionId) {
+            return;
+        }
+        setHomeScrollSpyState(activeSection.key, activeSection.id, updateHash);
+    };
+
+    let ticking = false;
+    const scheduleMeasure = (updateHash = false) => {
+        if (ticking) {
+            return;
+        }
+        ticking = true;
+        window.requestAnimationFrame(() => {
+            ticking = false;
+            measureActiveSection(updateHash);
+        });
+    };
+
+    navLinks.forEach((link) => {
+        if ((link.dataset.navGroup || "") !== "primary") {
+            return;
+        }
+        const href = link.getAttribute("href") || "";
+        const matchedSection = trackedSections.find((section) => href.endsWith(`#${section.id}`));
+        if (!matchedSection) {
+            return;
+        }
+        link.addEventListener("click", () => {
+            setHomeScrollSpyState(matchedSection.key, matchedSection.id, false);
+        });
+    });
+
+    window.addEventListener(
+        "scroll",
+        () => {
+            if (!getCurrentHash().startsWith("reading-category-")) {
+                scheduleMeasure(true);
+            }
+        },
+        { passive: true },
+    );
+    window.addEventListener("resize", () => scheduleMeasure(false));
+    window.addEventListener("load", () => scheduleMeasure(false));
+    scheduleMeasure(false);
 };
 
 const getStoredViewPreference = () => {
@@ -138,9 +305,6 @@ const updateViewModeUi = (preference, resolvedMode) => {
     viewModeLabels.forEach((node) => {
         node.textContent = modeLabel;
     });
-    viewModeMenuLabels.forEach((node) => {
-        node.textContent = modeLabel;
-    });
     viewModeNotes.forEach((node) => {
         node.textContent = noteText;
     });
@@ -171,7 +335,8 @@ const applyViewMode = (preference, persist = false) => {
 };
 
 applyViewMode(getStoredViewPreference(), false);
-syncPrimaryNavActiveState();
+bindHomePrimaryScrollSpy();
+syncActiveNavState();
 
 if (menuToggle && sidebar) {
     menuToggle.addEventListener("click", () => {
@@ -201,7 +366,7 @@ if (sidebar) {
 menuLinks.forEach((link) => {
     link.addEventListener("click", () => {
         closeMobileMenu();
-        window.setTimeout(syncPrimaryNavActiveState, 0);
+        window.setTimeout(syncActiveNavState, 0);
     });
 });
 
@@ -237,7 +402,11 @@ window.addEventListener("resize", () => {
 });
 
 window.addEventListener("hashchange", () => {
-    syncPrimaryNavActiveState();
+    syncActiveNavState();
+});
+
+window.addEventListener("popstate", () => {
+    syncActiveNavState();
 });
 
 document.addEventListener("keydown", (event) => {

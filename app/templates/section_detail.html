@@ -56,13 +56,11 @@
 <section class="detail-hero reading-hero reading-hero-refined">
     <div class="detail-head">
         <div>
-            <p class="section-kicker">{{ detail.category_title }}</p>
+            <p class="section-kicker">{{ detail.display_kicker }}</p>
             <h3>{{ detail.display_title }}</h3>
             <div class="reading-meta">
                 <span class="info-chip">日期 {{ detail.report_date }}</span>
-                {% if detail.view_label %}
-                    <span class="info-chip">{{ detail.view_label }}</span>
-                {% endif %}
+                <span class="info-chip soft">来源板块 {{ detail.source_section_title }}</span>
                 {% if detail.manual_mark_count %}
                     <span class="info-chip soft">已标记重点 {{ detail.manual_mark_count }}</span>
                 {% endif %}
@@ -84,9 +82,9 @@
             <p>{{ detail.current_file_name }}</p>
         </article>
         <article class="meta-box detail-summary-card">
-            <span class="meta-label">阅读视角</span>
-            <strong>{{ detail.category_title }}</strong>
-            <p>{{ detail.status }}</p>
+            <span class="meta-label">所属赛道</span>
+            <strong>{{ detail.track_title }}</strong>
+            <p>{{ detail.source_section_title }}</p>
         </article>
     </div>
 </section>
@@ -175,6 +173,9 @@
                                         {% for tag in card.tags %}
                                             <span class="meta-chip soft">{{ tag }}</span>
                                         {% endfor %}
+                                        {% if card.display_category %}
+                                            <span class="meta-chip soft">{{ card.display_category }}</span>
+                                        {% endif %}
                                     </div>
                                     {{ entry_mark_panel(card, request.path) }}
                                     <div class="insight-body">
@@ -213,6 +214,9 @@
                                                     {% for tag in card.tags %}
                                                         <span class="meta-chip soft">{{ tag }}</span>
                                                     {% endfor %}
+                                                    {% if card.display_category %}
+                                                        <span class="meta-chip soft">{{ card.display_category }}</span>
+                                                    {% endif %}
                                                 </div>
                                                 {{ entry_mark_panel(card, request.path) }}
                                                 <div class="insight-body">
@@ -306,7 +310,7 @@
     <div class="section-header">
         <div>
             <p class="section-kicker">历史变化</p>
-            <h3>该阅读主题最近版本轨迹</h3>
+            <h3>该阅读赛道最近版本轨迹</h3>
         </div>
     </div>
     <div class="timeline-list">
