@@ -150,19 +150,6 @@
     position: relative;
 }
 
-.section-card.has-section-marks::before,
-.section-preview-card.is-marked::before,
-.insight-card.is-marked::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 14px;
-    bottom: 14px;
-    width: 3px;
-    border-radius: 999px;
-    background: linear-gradient(180deg, rgba(124, 106, 88, 0.9), rgba(108, 92, 76, 0.46));
-}
-
 .meta-chip.strong {
     background: rgba(255, 255, 255, 0.82);
     border-color: rgba(124, 106, 88, 0.16);

@@ -5,6 +5,8 @@
   "_RUNTIME_ROOT_NOTICE": "If APP_RUNTIME_ROOT is set, all relative runtime paths below will resolve under that root. This is the recommended way to prepare future persistent-volume mounts.",
   "_PUBLIC_BASE_URL_NOTICE": "PUBLIC_BASE_URL is optional for local use. In a server/domain environment it should be set to the external origin only, for example https://intel.example.com . Do not include path/query/fragment.",
   "_PROXY_NOTICE": "TRUST_PROXY_HEADERS must stay false unless the app is behind your own trusted reverse proxy. Do not blindly trust forwarded headers from unknown sources.",
+  "_FAIL_CLOSED_NOTICE": "In production or server rehearsal mode, the app now fails closed. It will refuse to start if runtime paths are missing, if DATABASE_PATH is absent, or if the runtime database looks like an empty shell.",
+  "_SERVER_REHEARSAL_NOTICE": "For server rehearsal, use APP_ENV=production and explicitly set APP_RUNTIME_ROOT or the key runtime paths. Do not rely on repository-relative fallback runtime creation.",
   "_PRODUCTION_REQUIRED_FIELDS": [
     "APP_ENV=production",
     "SECRET_KEY",

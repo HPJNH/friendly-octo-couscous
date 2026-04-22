@@ -1,6 +1,7 @@
 {% macro entry_mark_panel(card, next_url, compact=false) -%}
 {% set summary = card.mark_summary or {} %}
 {% set viewer_mark = summary.viewer_mark %}
+{% set mark_items = summary.get('items', []) %}
 {% if card.entry_id %}
     <div class="entry-mark-shell{% if summary.has_marks %} is-marked{% endif %}{% if compact %} compact{% endif %}">
         {% if summary.has_marks %}
@@ -18,7 +19,7 @@
                         {{ summary.count }} 条标记
                     </summary>
                     <div class="entry-mark-popover-panel">
-                        {% for item in summary.items %}
+                        {% for item in mark_items %}
                             <article class="entry-mark-item">
                                 <div class="entry-mark-item-head">
                                     <strong>{{ item.marker_label }}</strong>

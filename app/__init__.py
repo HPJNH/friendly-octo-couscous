@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import tempfile
 from datetime import timedelta
 from pathlib import Path
@@ -20,6 +21,23 @@ DEFAULT_ADMIN_PASSWORD = "123456"
 DEFAULT_ADMIN_ACCESS_CODE = "admin-123456"
 DEFAULT_VIEWER_ACCESS_CODE = "viewer-123456"
 SQLITE_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
+STRICT_RUNTIME_PATH_KEYS = (
+    "APP_RUNTIME_ROOT",
+    "DATA_ROOT",
+    "STORAGE_ROOT",
+    "EXPORTS_ROOT",
+    "ARCHIVE_ROOT",
+    "DATABASE_PATH",
+    "TEMP_UPLOAD_ROOT",
+    "FILE_LIBRARY_ROOT",
+    "LOG_ROOT",
+    "RAW_DATA_ROOT",
+    "REVIEW_DATA_ROOT",
+    "VERIFICATION_DATA_ROOT",
+    "LINKED_DATA_ROOT",
+)
+RUNTIME_REQUIRED_TABLES = ("documents", "sections", "entries", "access_identities")
+MIN_RUNTIME_DATABASE_BYTES = 262_144
 
 CONFIG_SOURCE_ENV_KEYS = (
     "APP_ENV",
@@ -202,6 +220,69 @@ def _is_sqlite_database_path(path: Path | str) -> bool:
     return Path(path).suffix.lower() in SQLITE_SUFFIXES
 
 
+def runtime_paths_explicitly_configured(settings: dict) -> bool:
+    return any(setting_present(name, settings) for name in STRICT_RUNTIME_PATH_KEYS)
+
+
+def _count_files_under(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(1 for item in path.rglob("*") if item.is_file())
+
+
+def _inspect_runtime_database(database_path: Path) -> dict[str, object]:
+    info: dict[str, object] = {
+        "path": database_path,
+        "exists": database_path.exists(),
+        "is_file": database_path.is_file() if database_path.exists() else False,
+        "size_bytes": database_path.stat().st_size if database_path.exists() and database_path.is_file() else 0,
+        "table_names": set(),
+    }
+    if not info["exists"] or not info["is_file"]:
+        return info
+
+    try:
+        connection = sqlite3.connect(str(database_path))
+        connection.row_factory = sqlite3.Row
+    except sqlite3.Error as exc:
+        info["error"] = str(exc)
+        return info
+
+    try:
+        table_names = {
+            row["name"]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        info["table_names"] = table_names
+        for table_name in (*RUNTIME_REQUIRED_TABLES, "entry_marks"):
+            if table_name in table_names:
+                info[f"{table_name}_count"] = connection.execute(
+                    f"SELECT COUNT(1) AS count FROM {table_name}"
+                ).fetchone()["count"]
+            else:
+                info[f"{table_name}_count"] = 0
+        if "access_identities" in table_names:
+            info["active_admin_count"] = connection.execute(
+                """
+                SELECT COUNT(1) AS count
+                FROM access_identities
+                WHERE status = 'active' AND role = 'admin'
+                """
+            ).fetchone()["count"]
+            info["active_viewer_count"] = connection.execute(
+                """
+                SELECT COUNT(1) AS count
+                FROM access_identities
+                WHERE status = 'active' AND role = 'viewer'
+                """
+            ).fetchone()["count"]
+    except sqlite3.Error as exc:
+        info["error"] = str(exc)
+    finally:
+        connection.close()
+    return info
+
+
 def build_runtime_paths(base_dir: Path, settings: dict) -> dict[str, Path]:
     runtime_root = resolve_path_setting(base_dir, get_setting("APP_RUNTIME_ROOT", settings, "."), ".")
     data_root = resolve_runtime_path(runtime_root, get_setting("DATA_ROOT", settings, "data"), "data")
@@ -326,6 +407,7 @@ def validate_runtime_config(
     *,
     settings_path: Path | None = None,
     env_source_exists: bool = False,
+    runtime_paths_explicit: bool = False,
 ) -> list[str]:
     app_env = str(config.get("APP_ENV", "local")).strip().lower()
     warnings: list[str] = []
@@ -353,6 +435,9 @@ def validate_runtime_config(
 
     if settings_path is None and not env_source_exists:
         errors.append("production 模式必须提供真实配置来源：请创建 config/local_settings.json，或通过环境变量注入生产配置。")
+
+    if not runtime_paths_explicit:
+        errors.append("production / rehearsal 模式必须显式配置 APP_RUNTIME_ROOT 或关键运行路径，不能回退到仓库默认 runtime。")
 
     if _uses_default_or_placeholder(config.get("SECRET_KEY"), DEFAULT_SECRET_KEY):
         errors.append("SECRET_KEY 不能为空，也不能继续使用默认值或占位值。")
@@ -393,6 +478,13 @@ def _ensure_directory(path: Path, label: str) -> None:
         raise RuntimeError(f"{label} 目录初始化失败：{path} ({exc})") from exc
 
 
+def _require_existing_directory(path: Path, label: str) -> None:
+    if not path.exists():
+        raise RuntimeError(f"{label} 缺失：{path}")
+    if not path.is_dir():
+        raise RuntimeError(f"{label} 不是目录：{path}")
+
+
 def _ensure_directory_writable(path: Path, label: str) -> None:
     try:
         with tempfile.NamedTemporaryFile(dir=path, prefix=".wenmai_probe_", delete=True) as handle:
@@ -403,6 +495,7 @@ def _ensure_directory_writable(path: Path, label: str) -> None:
 
 
 def initialize_runtime_paths(config) -> None:
+    strict_runtime = str(config.get("APP_ENV", "local")).strip().lower() == "production"
     directory_map = {
         "APP_RUNTIME_ROOT": config["APP_RUNTIME_ROOT"],
         "DATA_ROOT": config["DATA_ROOT"],
@@ -422,7 +515,10 @@ def initialize_runtime_paths(config) -> None:
     }
 
     for label, path in directory_map.items():
-        _ensure_directory(path, label)
+        if strict_runtime:
+            _require_existing_directory(path, label)
+        else:
+            _ensure_directory(path, label)
 
     for label in (
         "DATA_ROOT",
@@ -443,11 +539,75 @@ def initialize_runtime_paths(config) -> None:
         _ensure_directory_writable(directory_map[label], label)
 
 
+def validate_runtime_materials(config) -> list[str]:
+    app_env = str(config.get("APP_ENV", "local")).strip().lower()
+    warnings: list[str] = []
+    strict_runtime = app_env == "production"
+    database_path = Path(config["DATABASE_PATH"])
+    raw_root = Path(config["RAW_DATA_ROOT"])
+    file_library_root = Path(config["FILE_LIBRARY_ROOT"])
+    archive_root = Path(config["ARCHIVE_ROOT"])
+
+    if not strict_runtime:
+        if not database_path.exists():
+            warnings.append("local 模式未找到 DATABASE_PATH，对应数据库会在本地模式下按需初始化。")
+            return warnings
+        inspect = _inspect_runtime_database(database_path)
+        if inspect.get("error"):
+            warnings.append(f"local 模式数据库检查发现异常：{inspect['error']}")
+        elif int(inspect.get("size_bytes", 0) or 0) < MIN_RUNTIME_DATABASE_BYTES:
+            warnings.append("local 模式检测到较小数据库文件，请确认不是误跑出的壳库。")
+        return warnings
+
+    errors: list[str] = []
+    if not database_path.exists():
+        errors.append(f"DATABASE_PATH 缺失：{database_path}")
+    elif not database_path.is_file():
+        errors.append(f"DATABASE_PATH 不是有效文件：{database_path}")
+
+    inspect = _inspect_runtime_database(database_path)
+    if inspect.get("error"):
+        errors.append(f"数据库文件不可读或不是有效 SQLite：{inspect['error']}")
+
+    table_names = inspect.get("table_names", set()) or set()
+    missing_tables = [table_name for table_name in RUNTIME_REQUIRED_TABLES if table_name not in table_names]
+    if missing_tables:
+        errors.append("数据库缺少核心业务表：" + ", ".join(missing_tables))
+
+    size_bytes = int(inspect.get("size_bytes", 0) or 0)
+    entries_count = int(inspect.get("entries_count", 0) or 0)
+    documents_count = int(inspect.get("documents_count", 0) or 0)
+    sections_count = int(inspect.get("sections_count", 0) or 0)
+    if size_bytes < MIN_RUNTIME_DATABASE_BYTES and (
+        missing_tables or (entries_count == 0 and documents_count == 0 and sections_count == 0)
+    ):
+        errors.append(
+            f"DATABASE_PATH 文件过小（{size_bytes} bytes），检测到明显壳库特征。"
+        )
+    if entries_count == 0 and documents_count == 0 and sections_count == 0:
+        errors.append("检测到壳库特征：entries / documents / sections 全为 0。")
+
+    raw_count = _count_files_under(raw_root)
+    library_count = _count_files_under(file_library_root)
+    archive_count = _count_files_under(archive_root)
+    if entries_count > 0 and raw_count == 0:
+        errors.append("RAW_DATA_ROOT 为空，与当前数据库条目状态不匹配。")
+    if documents_count > 0 and library_count == 0:
+        errors.append("FILE_LIBRARY_ROOT 为空，与当前 documents 状态不匹配。")
+    if documents_count > 0 and archive_count == 0:
+        errors.append("ARCHIVE_ROOT 为空，与当前 documents / sections 状态不匹配。")
+
+    if errors:
+        raise RuntimeError("runtime 守卫失败：\n- " + "\n- ".join(errors))
+    return warnings
+
+
 def create_app() -> Flask:
     base_dir = Path(__file__).resolve().parent.parent
     settings, settings_path = load_local_settings(base_dir)
     app_env = resolve_app_env(settings)
     settings_source_exists, env_source_exists, config_source_label = detect_config_source(settings_path)
+    runtime_paths_explicit = runtime_paths_explicitly_configured(settings)
     runtime_paths = build_runtime_paths(base_dir, settings)
     max_content_length_mb = get_int_setting("MAX_CONTENT_LENGTH_MB", settings, 50)
     admin_session_minutes = get_int_setting("ADMIN_SESSION_MINUTES", settings, 60)
@@ -488,6 +648,7 @@ def create_app() -> Flask:
         BASE_DIR=base_dir,
         SETTINGS_PATH=str(settings_path) if settings_source_exists else "",
         RUNTIME_CONFIG_SOURCE=config_source_label,
+        STARTUP_RUNTIME_REPAIRS_ENABLED=app_env == "local",
         APP_SERVER_WORKERS=app_server_workers,
         SINGLE_INSTANCE_ONLY=True,
         SERVER_ENTRYPOINT="wsgi:app",
@@ -520,6 +681,7 @@ def create_app() -> Flask:
         app.config,
         settings_path=settings_path,
         env_source_exists=env_source_exists,
+        runtime_paths_explicit=runtime_paths_explicit,
     )
 
     if trust_proxy_headers:
@@ -533,11 +695,13 @@ def create_app() -> Flask:
         )
 
     initialize_runtime_paths(app.config)
+    app.config["RUNTIME_CONFIG_WARNINGS"].extend(validate_runtime_materials(app.config))
 
-    init_db(app.config["DATABASE_PATH"])
+    init_db(app.config["DATABASE_PATH"], allow_create=app_env == "local")
     app.register_blueprint(bp)
     with app.app_context():
         ensure_bootstrap_access_codes()
         ensure_access_code_history()
-        upgrade_existing_documents()
+        if app.config.get("STARTUP_RUNTIME_REPAIRS_ENABLED", False):
+            upgrade_existing_documents()
     return app

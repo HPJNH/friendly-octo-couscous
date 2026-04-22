@@ -16,6 +16,7 @@ from app import (
 
 VALID_PRODUCTION_CONFIG = {
     "APP_ENV": "production",
+    "APP_RUNTIME_ROOT": ".",
     "SECRET_KEY": "prod-secret-key-20260421",
     "SESSION_COOKIE_SECURE": True,
     "BOOTSTRAP_ADMIN_ENABLED": False,
@@ -31,7 +32,12 @@ def expect_failure(overrides: dict, expected_fragment: str, *, settings_path: Pa
     config = dict(VALID_PRODUCTION_CONFIG)
     config.update(overrides)
     try:
-        validate_runtime_config(config, settings_path=settings_path, env_source_exists=False)
+        validate_runtime_config(
+            config,
+            settings_path=settings_path,
+            env_source_exists=False,
+            runtime_paths_explicit=True,
+        )
     except RuntimeError as exc:
         assert expected_fragment in str(exc), str(exc)
         return
@@ -40,7 +46,12 @@ def expect_failure(overrides: dict, expected_fragment: str, *, settings_path: Pa
 
 def main() -> None:
     validate_runtime_config({"APP_ENV": "local", "SECRET_KEY": DEFAULT_SECRET_KEY}, settings_path=None, env_source_exists=False)
-    validate_runtime_config(VALID_PRODUCTION_CONFIG, settings_path=Path("config/local_settings.json"), env_source_exists=False)
+    validate_runtime_config(
+        VALID_PRODUCTION_CONFIG,
+        settings_path=Path("config/local_settings.json"),
+        env_source_exists=False,
+        runtime_paths_explicit=True,
+    )
 
     expect_failure({"SECRET_KEY": DEFAULT_SECRET_KEY}, "SECRET_KEY")
     expect_failure({"SESSION_COOKIE_SECURE": False}, "SESSION_COOKIE_SECURE")
@@ -50,6 +61,17 @@ def main() -> None:
     expect_failure({"INITIAL_VIEWER_ACCESS_CODE": DEFAULT_VIEWER_ACCESS_CODE}, "INITIAL_VIEWER_ACCESS_CODE")
     expect_failure({"HIDE_INTERNAL_PATHS": False}, "HIDE_INTERNAL_PATHS")
     expect_failure({}, "真实配置来源", settings_path=None)
+    try:
+        validate_runtime_config(
+            VALID_PRODUCTION_CONFIG,
+            settings_path=Path("config/local_settings.json"),
+            env_source_exists=False,
+            runtime_paths_explicit=False,
+        )
+    except RuntimeError as exc:
+        assert "显式配置 APP_RUNTIME_ROOT" in str(exc), str(exc)
+    else:
+        raise AssertionError("expected runtime path explicit guard failure")
 
     print("runtime_config_guard_test_ok")
 

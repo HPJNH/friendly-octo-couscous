@@ -3313,7 +3313,6 @@ def upgrade_existing_documents() -> None:
 
         draft_rows = [row for row in current_rows if row["doc_type"] == "draft"]
         brief_rows = [row for row in current_rows if row["doc_type"] == "brief"]
-        start_date = draft_rows[0]["report_date"] if draft_rows and any(needs_upgrade(row) or missing_sections(connection, row["id"]) for row in draft_rows) else None
         current_entry_count = connection.execute(
             """
             SELECT COUNT(1) AS count
@@ -3322,9 +3321,27 @@ def upgrade_existing_documents() -> None:
               AND is_deleted = 0
             """
         ).fetchone()["count"]
-        needs_full_rebuild = bool(draft_rows) and current_entry_count == 0
+        total_entry_count = connection.execute(
+            """
+            SELECT COUNT(1) AS count
+            FROM entries
+            """
+        ).fetchone()["count"]
+        section_count = connection.execute(
+            """
+            SELECT COUNT(1) AS count
+            FROM sections
+            """
+        ).fetchone()["count"]
+        preserve_existing_content = total_entry_count > 0 or section_count > 0
+        start_date = None
+        if not preserve_existing_content and draft_rows and any(
+            needs_upgrade(row) or missing_sections(connection, row["id"]) for row in draft_rows
+        ):
+            start_date = draft_rows[0]["report_date"]
+        needs_full_rebuild = bool(draft_rows) and current_entry_count == 0 and total_entry_count == 0 and section_count == 0
 
-        if brief_rows and any(needs_upgrade(row) for row in brief_rows):
+        if not preserve_existing_content and brief_rows and any(needs_upgrade(row) for row in brief_rows):
             reparse_current_briefs(connection, brief_rows)
 
         connection.commit()

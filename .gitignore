@@ -18,38 +18,31 @@ htmlcov/
 venv/
 env/
 
-# Local config
-config/local_settings.json
-
-# Runtime data and evidence files
-data/database/*.db
-data/database/*.sqlite*
+# Runtime backups
 data/database/backups/**
-data/processed/archive_parsed/**/*.json
-data/raw/**/*.docx
-data/raw/**/*.pdf
-data/raw/**/*.txt
-data/raw/**/*.md
-data/review/**
-data/verification/**
+data/database/intelligence_browser.db
+data/database/*before_*.db
 
 # Local storage
 storage/cache/**
+storage/uploads/**
 storage/file_library/**
 storage/logs/**
-storage/uploads/**
+!storage/logs/.gitkeep
 
 # Generated exports
-exports/pdf/**
-exports/reports/**
 exports/review_packages/**
 exports/qa_screenshots/**
+exports/reports/**
+exports/pdf/**
 
-# Local archive snapshots
+# Local runtime data
+config/local_settings.json
+data/raw/**
+data/processed/archive_parsed/**
+
+# Local archive material
+archive/**
+
+# Disposable archive snapshots
 archive/duplicates/**
-archive/legacy_docs/**
-archive/private_local_only/**
-archive/review_history/**
-archive/research_history/**
-archive/legacy_exports/**
-archive/pdf_exports/**

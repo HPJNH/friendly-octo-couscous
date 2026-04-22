@@ -86,6 +86,26 @@ def valid_production_env(runtime_root: Path) -> dict[str, str]:
     }
 
 
+def prepare_runtime_dirs(runtime_root: Path) -> None:
+    for relative in (
+        "data",
+        "data/database",
+        "data/processed/archive_parsed",
+        "data/raw",
+        "data/review",
+        "data/verification",
+        "data/raw/linked",
+        "exports",
+        "exports/pdf",
+        "exports/reports",
+        "storage",
+        "storage/cache/incoming",
+        "storage/file_library",
+        "storage/logs",
+    ):
+        (runtime_root / relative).mkdir(parents=True, exist_ok=True)
+
+
 def main() -> None:
     temp_roots: list[Path] = []
     try:
@@ -127,6 +147,8 @@ def main() -> None:
         runtime_root = Path(tempfile.mkdtemp())
         temp_roots.append(runtime_root)
         blocked_storage = runtime_root / "blocked_storage"
+        prepare_runtime_dirs(runtime_root)
+        shutil.rmtree(runtime_root / "storage", ignore_errors=True)
         blocked_storage.parent.mkdir(parents=True, exist_ok=True)
         blocked_storage.write_text("not-a-directory", encoding="utf-8")
         env = valid_production_env(runtime_root)

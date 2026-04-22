@@ -185,7 +185,7 @@ def handle_file_too_large(_error):
 
 @bp.route("/access/login", methods=["GET", "POST"])
 def access_login():
-    next_url = build_safe_next(request.values.get("next"), url_for("main.index"))
+    next_url = sanitize_optional_redirect_target(request.values.get("next")) or url_for("main.index")
     if request.method == "POST":
         lock_state = get_auth_lock_state("access_login")
         if lock_state["locked"]:
@@ -214,7 +214,7 @@ def access_login():
 
 @bp.route("/admin/verify", methods=["GET", "POST"])
 def admin_verify():
-    next_url = build_safe_next(request.values.get("next"), url_for("main.upload"))
+    next_url = sanitize_optional_redirect_target(request.values.get("next")) or url_for("main.upload")
     if request.method == "POST":
         lock_state = get_auth_lock_state("admin_verify")
         if lock_state["locked"]:

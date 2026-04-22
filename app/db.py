@@ -241,7 +241,18 @@ def get_connection(database_path: Path) -> sqlite3.Connection:
     return connection
 
 
-def init_db(database_path: Path) -> None:
+def init_db(database_path: Path, *, allow_create: bool = True) -> None:
+    database_path = Path(database_path)
+    if database_path.exists() and not database_path.is_file():
+        raise RuntimeError(f"DATABASE_PATH 不是有效文件：{database_path}")
+    if not database_path.parent.exists():
+        if allow_create:
+            database_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            raise RuntimeError(f"DATABASE_PATH 父目录不存在：{database_path.parent}")
+    if not database_path.exists() and not allow_create:
+        raise RuntimeError(f"DATABASE_PATH 缺失：{database_path}")
+
     with get_connection(database_path) as connection:
         connection.executescript(SCHEMA)
         ensure_column(connection, "documents", "lifecycle_status", "TEXT NOT NULL DEFAULT 'active'")
