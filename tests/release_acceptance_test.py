@@ -89,6 +89,20 @@ def fetch_runtime_targets(database_path: Path) -> dict:
         }
 
 
+def fetch_active_document_ids(database_path: Path) -> list[int]:
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id
+            FROM documents
+            WHERE lifecycle_status = 'active'
+              AND is_current = 1
+            ORDER BY report_date, doc_type, id
+            """
+        ).fetchall()
+    return [int(row[0]) for row in rows]
+
+
 def worker(app, viewer_code: str, draft_id: int) -> dict:
     with app.test_client() as client:
         login_page = client.get("/access/login?next=/")
@@ -115,6 +129,7 @@ def main() -> None:
     app = create_app()
     codes = load_formal_codes()
     targets = fetch_runtime_targets(Path(app.config["DATABASE_PATH"]))
+    active_document_ids = fetch_active_document_ids(Path(app.config["DATABASE_PATH"]))
     summary: dict[str, object] = {"targets": targets}
 
     with app.test_client() as client:
@@ -142,6 +157,15 @@ def main() -> None:
         assert download_response.status_code == 200
         assert "wordprocessingml.document" in (download_response.headers.get("Content-Type") or "")
         viewer_results[f"/library/document/{targets['draft_id']}/download"] = download_response.status_code
+        all_active_document_results = {}
+        for document_id in active_document_ids:
+            detail_response = client.get(f"/library/document/{document_id}", follow_redirects=False)
+            assert detail_response.status_code == 200, f"viewer failed on active document detail {document_id}"
+            all_active_document_results[f"/library/document/{document_id}"] = detail_response.status_code
+            file_response = client.get(f"/library/document/{document_id}/download", follow_redirects=False)
+            assert file_response.status_code == 200, f"viewer failed on active document download {document_id}"
+            all_active_document_results[f"/library/document/{document_id}/download"] = file_response.status_code
+        summary["viewer_active_documents"] = all_active_document_results
 
         viewer_upload = client.get("/upload", follow_redirects=False)
         assert viewer_upload.status_code == 302
@@ -260,6 +284,22 @@ def main() -> None:
     with get_connection(app.config["DATABASE_PATH"]) as connection:
         counts = {
             "documents": connection.execute("SELECT COUNT(*) AS count FROM documents").fetchone()["count"],
+            "documents_active": connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM documents
+                WHERE lifecycle_status = 'active'
+                  AND is_current = 1
+                """
+            ).fetchone()["count"],
+            "documents_archived": connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM documents
+                WHERE lifecycle_status = 'archived'
+                  AND is_current = 0
+                """
+            ).fetchone()["count"],
             "export_files": connection.execute("SELECT COUNT(*) AS count FROM export_files").fetchone()["count"],
             "access_identities": connection.execute(
                 "SELECT COUNT(*) AS count FROM access_identities WHERE status = 'active'"
@@ -283,14 +323,21 @@ def main() -> None:
             if any(marker in (row["actor_label"] or "") for marker in BAD_MARKERS)
         ]
 
-    assert counts["documents"] == 21, f"documents count mismatch: {counts['documents']}"
+    file_library_files = len([path for path in Path(app.config["FILE_LIBRARY_ROOT"]).rglob("*") if path.is_file()])
+
+    assert counts["documents"] == 6, f"documents count mismatch: {counts['documents']}"
+    assert counts["documents_active"] == 6, f"active documents count mismatch: {counts['documents_active']}"
+    assert counts["documents_archived"] == 0, f"archived documents should be removed: {counts['documents_archived']}"
     assert counts["export_files"] == 1, f"export count mismatch: {counts['export_files']}"
     assert counts["access_identities"] == 8, f"access identity count mismatch: {counts['access_identities']}"
     assert counts["auth_attempts"] == 0, f"auth attempts not cleared: {counts['auth_attempts']}"
     assert counts["entry_marks"] == 0, f"entry marks not cleaned: {counts['entry_marks']}"
     assert counts["audit_logs"] >= 2, "expected clean audit logs after acceptance"
+    assert len(active_document_ids) == 6, f"active document id count mismatch: {len(active_document_ids)}"
+    assert file_library_files == 6, f"file library file count mismatch: {file_library_files}"
     assert not dirty_labels, f"dirty access labels remain: {dirty_labels}"
     assert not bad_audit_labels, f"dirty audit labels remain: {bad_audit_labels}"
+    counts["file_library_files"] = file_library_files
     summary["counts"] = counts
 
     print(json.dumps(summary, ensure_ascii=True, indent=2))
