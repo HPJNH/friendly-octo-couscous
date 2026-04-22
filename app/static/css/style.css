@@ -486,6 +486,9 @@ ol {
 
 .topbar {
     display: flex;
+    position: relative;
+    z-index: 20;
+    isolation: isolate;
     align-items: flex-start;
     justify-content: space-between;
     gap: 18px;
@@ -496,6 +499,7 @@ ol {
     border: 1px solid var(--line);
     box-shadow: var(--shadow-soft);
     backdrop-filter: blur(16px);
+    overflow: visible;
 }
 
 .topbar-main {
@@ -2815,6 +2819,8 @@ body.page-home {
 
 .topbar-utility {
     display: flex;
+    position: relative;
+    z-index: 1;
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
@@ -2829,6 +2835,7 @@ body.page-home {
 
 .topbar-tools-drawer {
     position: relative;
+    z-index: 30;
 }
 
 .topbar-tools-drawer summary {
@@ -2866,7 +2873,7 @@ body.page-home {
     position: absolute;
     top: calc(100% + 10px);
     right: 0;
-    z-index: 25;
+    z-index: 60;
     display: grid;
     gap: 8px;
     min-width: 220px;

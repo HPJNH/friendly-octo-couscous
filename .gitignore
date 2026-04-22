@@ -48,6 +48,7 @@ exports/qa_screenshots/**
 # Local archive snapshots
 archive/duplicates/**
 archive/legacy_docs/**
+archive/private_local_only/**
 archive/review_history/**
 archive/research_history/**
 archive/legacy_exports/**
