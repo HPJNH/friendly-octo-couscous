@@ -31,8 +31,8 @@
 验证前访问结果：
 
 - 首页未登录访问：`302 -> /access/login?next=/`
-- viewer 访问码 `887053`：最终 `/`，状态 `200`
-- admin 访问码 `388588`：最终 `/upload`，状态 `200`
+- 当时使用一组临时恢复 viewer 访问码：最终 `/`，状态 `200`
+- 当时使用一组临时恢复 admin 访问码：最终 `/upload`，状态 `200`
 - 上传页 `/upload`：状态 `200`
 
 ## 3. rebuild 执行方式
@@ -106,8 +106,8 @@ python scripts/migration_rebuild_entries.py
 rebuild 后重新按真实表单流程验证：
 
 - 首页未登录访问：`302 -> /access/login?next=/`
-- viewer 访问码 `887053`：最终 `/`，状态 `200`
-- admin 访问码 `388588`：最终 `/upload`，状态 `200`
+- 当时使用一组临时恢复 viewer 访问码：最终 `/`，状态 `200`
+- 当时使用一组临时恢复 admin 访问码：最终 `/upload`，状态 `200`
 - 上传页 `/upload`：状态 `200`
 
 相关回归：
