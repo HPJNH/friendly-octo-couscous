@@ -16,17 +16,18 @@ from app.db import get_connection
 from app.utils import now_string
 
 
-ADMIN_LABEL = "俊睿"
-ADMIN_CODE = "256614"
-VIEWER_LABELS = [
-    "闫斌先生",
-    "赵莹女士",
-    "魏二强先生",
-    "闫力阳先生",
-    "宋庆华先生",
-    "卢亚杰先生",
-    "孟凡让先生",
+FORMAL_ACCESS_ROSTER = [
+    {"label": "俊睿", "role": "admin"},
+    {"label": "闫斌先生", "role": "admin"},
+    {"label": "赵莹女士", "role": "viewer"},
+    {"label": "魏二强先生", "role": "viewer"},
+    {"label": "闫力阳先生", "role": "viewer"},
+    {"label": "宋庆华先生", "role": "viewer"},
+    {"label": "卢亚杰先生", "role": "viewer"},
+    {"label": "孟凡让先生", "role": "viewer"},
 ]
+
+QUESTION_MARK_TOKENS = {"?", "??", "???", "????", "?????"}
 
 
 def row_to_dict(row) -> dict:
@@ -44,14 +45,23 @@ def write_json(path: Path, payload) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def assert_formal_labels_clean() -> None:
+    for item in FORMAL_ACCESS_ROSTER:
+        label = (item["label"] or "").strip()
+        if not label:
+            raise ValueError("正式访问名单中存在空名称。")
+        if "?" in label or label in QUESTION_MARK_TOKENS:
+            raise ValueError(f"正式访问名单存在损坏标签：{label}")
+
+
 def generate_unique_codes(count: int) -> list[str]:
-    codes: set[str] = {ADMIN_CODE}
     generated: list[str] = []
+    seen: set[str] = set()
     while len(generated) < count:
         candidate = generate_access_code()
-        if candidate in codes:
+        if candidate in seen:
             continue
-        codes.add(candidate)
+        seen.add(candidate)
         generated.append(candidate)
     return generated
 
@@ -64,18 +74,12 @@ def export_credentials(path: Path, rows: list[dict]) -> None:
         "",
     ]
     for item in rows:
-        lines.extend(
-            [
-                f"用户名：{item['label']}",
-                f"角色：{item['role']}",
-                f"初始访问码：{item['code']}",
-                "",
-            ]
-        )
+        lines.append(f"{item['label']} | {item['role']} | {item['code']}")
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
 def main() -> None:
+    assert_formal_labels_clean()
     app = create_app()
     with app.app_context():
         log_root = Path(app.config["LOG_ROOT"])
@@ -85,9 +89,7 @@ def main() -> None:
         with get_connection(app.config["DATABASE_PATH"]) as connection:
             identities_before = [
                 row_to_dict(row)
-                for row in connection.execute(
-                    "SELECT * FROM access_identities ORDER BY id"
-                ).fetchall()
+                for row in connection.execute("SELECT * FROM access_identities ORDER BY id").fetchall()
             ]
             identity_ids = [item["id"] for item in identities_before]
             access_audit_logs = [
@@ -104,9 +106,7 @@ def main() -> None:
             ]
             auth_attempts = [
                 row_to_dict(row)
-                for row in connection.execute(
-                    "SELECT * FROM auth_attempts ORDER BY id"
-                ).fetchall()
+                for row in connection.execute("SELECT * FROM auth_attempts ORDER BY id").fetchall()
             ]
 
             write_json(backup_dir / "access_identities_before_reset.json", identities_before)
@@ -137,22 +137,26 @@ def main() -> None:
             connection.commit()
 
         created_rows: list[dict] = []
-        admin_identity = create_access_identity(
-            label=ADMIN_LABEL,
-            raw_code=ADMIN_CODE,
-            role="admin",
-            notes="阶段五-D 重置后的管理员资格",
-        )
-        created_rows.append({"label": admin_identity["label"], "role": "admin", "code": ADMIN_CODE})
-
-        for label, code in zip(VIEWER_LABELS, generate_unique_codes(len(VIEWER_LABELS)), strict=True):
+        for roster_item, code in zip(FORMAL_ACCESS_ROSTER, generate_unique_codes(len(FORMAL_ACCESS_ROSTER)), strict=True):
             identity = create_access_identity(
-                label=label,
+                label=roster_item["label"],
                 raw_code=code,
-                role="viewer",
-                notes="阶段五-D 重置后的浏览资格",
+                role=roster_item["role"],
+                notes=f"2026-04-22 正式访问资格初始化（{roster_item['role']}）",
             )
-            created_rows.append({"label": identity["label"], "role": "viewer", "code": code})
+            if "?" in identity["label"]:
+                raise ValueError(f"访问资格初始化后发现损坏标签：{identity['label']}")
+            created_rows.append(
+                {
+                    "label": identity["label"],
+                    "role": identity["role"],
+                    "code": code,
+                }
+            )
+
+        role_counts: dict[str, int] = {}
+        for item in created_rows:
+            role_counts[item["role"]] = role_counts.get(item["role"], 0) + 1
 
         summary = {
             "executed_at": now_string(),
@@ -164,8 +168,8 @@ def main() -> None:
                 "auth_attempts": len(auth_attempts),
             },
             "created_counts": {
-                "admins": 1,
-                "viewers": len(VIEWER_LABELS),
+                "admins": role_counts.get("admin", 0),
+                "viewers": role_counts.get("viewer", 0),
                 "total": len(created_rows),
             },
             "bootstrap_admin_enabled": bool(app.config.get("BOOTSTRAP_ADMIN_ENABLED", False)),
