@@ -19,6 +19,7 @@ venv/
 env/
 
 # Runtime backups
+data/database/**
 data/database/backups/**
 data/database/intelligence_browser.db
 data/database/*before_*.db

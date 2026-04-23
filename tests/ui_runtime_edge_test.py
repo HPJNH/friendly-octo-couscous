@@ -8,6 +8,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from bs4 import BeautifulSoup
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -23,6 +25,10 @@ WATCHED_ENV_KEYS = [
     "APP_RUNTIME_ROOT",
     "BOOTSTRAP_ADMIN_ENABLED",
 ]
+
+MOBILE_VIEWER_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile"
+MOBILE_ADMIN_UA = "Mozilla/5.0 (Android 14; Mobile)"
+DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 
 @contextmanager
@@ -47,7 +53,7 @@ def seed_viewer_session(client, viewer_id: int, display_name: str) -> None:
     with client.session_transaction() as session:
         session[ACCESS_SESSION_KEY] = {
             "identity_id": viewer_id,
-            "label": "测试访客",
+            "label": "Test Viewer",
             "role": "viewer",
             "method": "access-code",
             "display_name": display_name,
@@ -61,13 +67,56 @@ def seed_admin_session(client, admin_id: int, display_name: str) -> None:
     with client.session_transaction() as session:
         session[ACCESS_SESSION_KEY] = {
             "identity_id": admin_id,
-            "label": "管理员",
+            "label": "Test Admin",
             "role": "admin",
             "method": "access-code",
             "display_name": display_name,
             "verified_at": now,
             "expires_at": now + 3600,
         }
+
+
+def assert_sidebar_footer_inside_scroll(html: str, path: str) -> None:
+    soup = BeautifulSoup(html, "html.parser")
+    sidebar = soup.select_one("#sidebar")
+    assert sidebar is not None, f"sidebar missing on {path}"
+    scroll = sidebar.select_one(".sidebar-scroll")
+    assert scroll is not None, f"sidebar scroll missing on {path}"
+    footer = sidebar.select_one(".sidebar-footer")
+    assert footer is not None, f"sidebar footer missing on {path}"
+    assert scroll in footer.parents, f"sidebar footer should stay inside sidebar scroll on {path}"
+
+
+def assert_selectors_present(html: str, path: str, selectors: list[str]) -> None:
+    soup = BeautifulSoup(html, "html.parser")
+    for selector in selectors:
+        assert soup.select_one(selector) is not None, f"{selector} missing on {path}"
+
+
+def load_identity_ids(app) -> tuple[int, int]:
+    with app.app_context():
+        with get_connection(app.config["DATABASE_PATH"]) as connection:
+            viewer = connection.execute(
+                """
+                SELECT id
+                FROM access_identities
+                WHERE role = 'viewer' AND status = 'active'
+                ORDER BY id
+                LIMIT 1
+                """
+            ).fetchone()
+            admin = connection.execute(
+                """
+                SELECT id
+                FROM access_identities
+                WHERE role = 'admin' AND status = 'active'
+                ORDER BY id
+                LIMIT 1
+                """
+            ).fetchone()
+    assert viewer is not None, "viewer identity should exist when bootstrap admin is enabled in local mode"
+    assert admin is not None, "admin identity should exist when bootstrap admin is enabled in local mode"
+    return int(viewer["id"]), int(admin["id"])
 
 
 def main() -> None:
@@ -88,41 +137,18 @@ def main() -> None:
         ):
             app = create_app()
             client = app.test_client()
-
-            with app.app_context():
-                with get_connection(app.config["DATABASE_PATH"]) as connection:
-                    viewer = connection.execute(
-                        """
-                        SELECT id
-                        FROM access_identities
-                        WHERE role = 'viewer' AND status = 'active'
-                        ORDER BY id
-                        LIMIT 1
-                        """
-                    ).fetchone()
-                    admin = connection.execute(
-                        """
-                        SELECT id
-                        FROM access_identities
-                        WHERE role = 'admin' AND status = 'active'
-                        ORDER BY id
-                        LIMIT 1
-                        """
-                    ).fetchone()
-            assert viewer is not None, "viewer identity should exist when bootstrap admin is enabled in local mode"
-            assert admin is not None, "admin identity should exist when bootstrap admin is enabled in local mode"
+            viewer_id, admin_id = load_identity_ids(app)
 
             names = [
-                "闫斌先生",
-                "闫力阳先生",
-                "孟凡让先生",
+                "Analyst",
+                "Operations Desk",
                 "",
                 "A",
-                "这是一个非常非常非常长的测试姓名用于验证首页欢迎区极端值收口能力先生",
+                "A very long display name used to keep the home welcome block under layout pressure",
             ]
 
             for name in names:
-                seed_viewer_session(client, int(viewer["id"]), name)
+                seed_viewer_session(client, viewer_id, name)
                 response = client.get("/")
                 assert response.status_code == 200, f"home page should render for display_name={name!r}"
                 html = response.get_data(as_text=True)
@@ -146,28 +172,71 @@ def main() -> None:
                 else:
                     assert 'class="welcome-heading-name"' not in html
 
-            seed_viewer_session(client, int(viewer["id"]), "移动访客")
-            mobile_viewer_response = client.get("/", headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile"})
+            seed_viewer_session(client, viewer_id, "mobile-viewer")
+            mobile_viewer_response = client.get("/", headers={"User-Agent": MOBILE_VIEWER_UA})
             assert mobile_viewer_response.status_code == 200
             mobile_viewer_html = mobile_viewer_response.get_data(as_text=True)
             assert 'class="topbar-utility"' not in mobile_viewer_html
-            assert '/admin/verify' not in mobile_viewer_html
-            assert mobile_viewer_html.index('class="welcome-heading"') < mobile_viewer_html.index('workbench-shortcuts-panel')
+            assert "/admin/verify" not in mobile_viewer_html
+            assert mobile_viewer_html.index('class="welcome-heading"') < mobile_viewer_html.index("workbench-shortcuts-panel")
+            assert_sidebar_footer_inside_scroll(mobile_viewer_html, "/ mobile viewer")
+            assert_selectors_present(
+                mobile_viewer_html,
+                "/ mobile viewer",
+                [".sidebar-scroll", ".sidebar-footer", ".workbench-shortcuts-panel", "#today-focus"],
+            )
 
-            seed_admin_session(client, int(admin["id"]), "移动管理员")
-            mobile_admin_response = client.get("/", headers={"User-Agent": "Mozilla/5.0 (Android 14; Mobile)"})
+            seed_admin_session(client, admin_id, "mobile-admin")
+            mobile_admin_response = client.get("/", headers={"User-Agent": MOBILE_ADMIN_UA})
             assert mobile_admin_response.status_code == 200
             mobile_admin_html = mobile_admin_response.get_data(as_text=True)
             assert 'class="topbar-utility"' not in mobile_admin_html
-            assert '/upload' in mobile_admin_html
-            assert mobile_admin_html.index('class="welcome-heading"') < mobile_admin_html.index('workbench-shortcuts-panel')
+            assert "/upload" in mobile_admin_html
+            assert mobile_admin_html.index('class="welcome-heading"') < mobile_admin_html.index("workbench-shortcuts-panel")
+            assert_sidebar_footer_inside_scroll(mobile_admin_html, "/ mobile admin")
+            assert_selectors_present(
+                mobile_admin_html,
+                "/ mobile admin",
+                [".sidebar-scroll", ".sidebar-footer", ".workbench-shortcuts-panel", "#today-focus"],
+            )
 
-            seed_viewer_session(client, int(viewer["id"]), "桌面访客")
-            desktop_viewer_response = client.get("/", headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            seed_viewer_session(client, viewer_id, "desktop-viewer")
+            desktop_viewer_response = client.get("/", headers={"User-Agent": DESKTOP_UA})
             assert desktop_viewer_response.status_code == 200
             desktop_viewer_html = desktop_viewer_response.get_data(as_text=True)
             assert 'class="topbar-utility"' in desktop_viewer_html
-            assert '/admin/verify' in desktop_viewer_html
+            assert "/admin/verify" in desktop_viewer_html
+            assert_sidebar_footer_inside_scroll(desktop_viewer_html, "/ desktop viewer")
+            assert_selectors_present(
+                desktop_viewer_html,
+                "/ desktop viewer",
+                [".sidebar-scroll", ".sidebar-footer", ".topbar-utility", "#today-focus"],
+            )
+
+            viewer_page_checks = [
+                ("/history", [".history-hero-panel", ".history-trajectory-stage"]),
+                ("/library", [".library-section-card", ".soft-hidden-collection"]),
+            ]
+            for path, selectors in viewer_page_checks:
+                seed_viewer_session(client, viewer_id, f"render {path}")
+                for label, user_agent in (("mobile", MOBILE_VIEWER_UA), ("desktop", DESKTOP_UA)):
+                    response = client.get(path, headers={"User-Agent": user_agent})
+                    assert response.status_code == 200, f"{path} should render for {label}"
+                    html = response.get_data(as_text=True)
+                    assert_sidebar_footer_inside_scroll(html, f"{path} {label}")
+                    assert_selectors_present(html, f"{path} {label}", [".sidebar-scroll", ".sidebar-footer", *selectors])
+
+            seed_admin_session(client, admin_id, "access-manager")
+            for label, user_agent in (("mobile", MOBILE_ADMIN_UA), ("desktop", DESKTOP_UA)):
+                response = client.get("/access/manage", headers={"User-Agent": user_agent})
+                assert response.status_code == 200, f"/access/manage should render for {label}"
+                html = response.get_data(as_text=True)
+                assert_sidebar_footer_inside_scroll(html, f"/access/manage {label}")
+                assert_selectors_present(
+                    html,
+                    f"/access/manage {label}",
+                    [".sidebar-scroll", ".sidebar-footer", ".access-stage-layout", ".access-audit-layout", ".access-log-stage"],
+                )
 
         print("ui_runtime_edge_test_ok")
     finally:

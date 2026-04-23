@@ -42,6 +42,7 @@ html {
 body {
     margin: 0;
     min-height: 100vh;
+    min-height: 100dvh;
     overflow-x: hidden;
     color: var(--text);
     background:
@@ -112,6 +113,7 @@ ol {
     display: grid;
     grid-template-columns: 304px minmax(0, 1fr);
     min-height: 100vh;
+    min-height: 100dvh;
 }
 
 .mobile-nav-toggle,
@@ -125,6 +127,7 @@ ol {
     top: 0;
     align-self: start;
     height: 100vh;
+    height: 100dvh;
     padding: 22px 18px;
     overflow: hidden;
     background: linear-gradient(180deg, rgba(252, 249, 243, 0.92), rgba(244, 237, 228, 0.98));
@@ -190,6 +193,9 @@ ol {
 .sidebar-scroll {
     flex: 1;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
     overflow-y: auto;
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
@@ -344,6 +350,7 @@ ol {
     display: flex;
     flex-direction: column;
     gap: 12px;
+    margin-top: auto;
     padding-top: 12px;
     border-top: 1px solid var(--line);
 }
@@ -1463,7 +1470,8 @@ ol {
     left: 0;
     width: min(86vw, 360px);
     max-width: 360px;
-    height: 100svh;
+    height: 100vh;
+    height: 100dvh;
     padding: 0;
     background: transparent;
     border-right: none;
@@ -1514,7 +1522,7 @@ ol {
 }
 
 .view-mobile .sidebar-scroll {
-    padding: 16px 16px 16px;
+    padding: 16px 16px 18px;
 }
 
 .view-mobile .sidebar-intro {
@@ -1539,8 +1547,8 @@ ol {
 }
 
 .view-mobile .sidebar-footer {
-    padding: 14px 16px 18px;
-    background: rgba(255, 252, 247, 0.92);
+    padding: 14px 0 18px;
+    background: transparent;
 }
 
 .view-mobile .sidebar-tools {
@@ -1723,6 +1731,7 @@ ol {
     top: 0;
     width: auto;
     height: 100vh;
+    height: 100dvh;
     transform: none;
     pointer-events: auto;
 }
@@ -2179,8 +2188,7 @@ body::-webkit-scrollbar-thumb,
     -webkit-backdrop-filter: blur(18px) saturate(140%);
 }
 
-.view-mobile .sidebar-header,
-.view-mobile .sidebar-footer {
+.view-mobile .sidebar-header {
     background: rgba(255, 255, 255, 0.28);
 }
 
@@ -2297,7 +2305,7 @@ body::-webkit-scrollbar-thumb,
 }
 
 .audit-stage {
-    min-height: 100%;
+    min-height: 0;
 }
 
 .audit-log-list {
@@ -3429,7 +3437,15 @@ body.page-home {
 
 .access-side-stage,
 .access-log-stage {
-    min-height: 100%;
+    min-height: 0;
+}
+
+@media (min-width: 1081px) {
+    .audit-stage,
+    .access-side-stage,
+    .access-log-stage {
+        min-height: 100%;
+    }
 }
 
 .access-note-stack {
