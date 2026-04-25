@@ -93,6 +93,28 @@ def assert_selectors_present(html: str, path: str, selectors: list[str]) -> None
         assert soup.select_one(selector) is not None, f"{selector} missing on {path}"
 
 
+def assert_home_reading_nav_targets(html: str, path: str) -> None:
+    soup = BeautifulSoup(html, "html.parser")
+    reading_topics = soup.select_one("#reading-topics")
+    assert reading_topics is not None, f"reading-topics missing on {path}"
+
+    reading_sections = soup.select('section.section-cluster[id^="reading-category-"]')
+    assert reading_sections, f"reading category sections missing on {path}"
+
+    reading_section_ids = [section.get("id", "") for section in reading_sections]
+    assert all(reading_section_ids), f"reading category section id missing on {path}"
+    assert len(reading_section_ids) == len(set(reading_section_ids)), f"reading category section ids should be unique on {path}"
+
+    nav_links = soup.select('[data-nav-group="reading"][href*="#reading-category-"]')
+    assert nav_links, f"reading nav links missing on {path}"
+    for link in nav_links:
+        href = link.get("href", "")
+        assert "#" in href, f"reading nav href missing hash target on {path}"
+        target_id = href.split("#", 1)[1]
+        assert target_id in reading_section_ids, f"reading nav target {target_id!r} missing on {path}"
+        assert soup.find(id=target_id) is not None, f"reading nav target node {target_id!r} missing on {path}"
+
+
 def load_identity_ids(app) -> tuple[int, int]:
     with app.app_context():
         with get_connection(app.config["DATABASE_PATH"]) as connection:
@@ -123,6 +145,7 @@ def main() -> None:
     main_js = (PROJECT_ROOT / "app" / "static" / "js" / "main.js").read_text(encoding="utf-8")
     for section_id in ("today-focus", "today-new", "recent-versions", "history-archive"):
         assert f'"{section_id}"' in main_js, f"{section_id} should remain in HOME_SCROLL_SPY_SECTIONS"
+    assert 'section.section-cluster[id^="reading-category-"]' in main_js
 
     temp_roots: list[Path] = []
     try:
@@ -166,6 +189,7 @@ def main() -> None:
                 assert 'data-nav-key="history_archive"' in html
                 assert 'class="welcome-heading"' in html
                 assert 'class="hero-subtitle"' in html
+                assert_home_reading_nav_targets(html, f"/ home display_name={name!r}")
                 if name:
                     assert name in html
                     assert 'class="welcome-heading-name"' in html
@@ -180,6 +204,7 @@ def main() -> None:
             assert "/admin/verify" not in mobile_viewer_html
             assert mobile_viewer_html.index('class="welcome-heading"') < mobile_viewer_html.index("workbench-shortcuts-panel")
             assert_sidebar_footer_inside_scroll(mobile_viewer_html, "/ mobile viewer")
+            assert_home_reading_nav_targets(mobile_viewer_html, "/ mobile viewer")
             assert_selectors_present(
                 mobile_viewer_html,
                 "/ mobile viewer",
@@ -194,6 +219,7 @@ def main() -> None:
             assert "/upload" in mobile_admin_html
             assert mobile_admin_html.index('class="welcome-heading"') < mobile_admin_html.index("workbench-shortcuts-panel")
             assert_sidebar_footer_inside_scroll(mobile_admin_html, "/ mobile admin")
+            assert_home_reading_nav_targets(mobile_admin_html, "/ mobile admin")
             assert_selectors_present(
                 mobile_admin_html,
                 "/ mobile admin",
@@ -207,6 +233,7 @@ def main() -> None:
             assert 'class="topbar-utility"' in desktop_viewer_html
             assert "/admin/verify" in desktop_viewer_html
             assert_sidebar_footer_inside_scroll(desktop_viewer_html, "/ desktop viewer")
+            assert_home_reading_nav_targets(desktop_viewer_html, "/ desktop viewer")
             assert_selectors_present(
                 desktop_viewer_html,
                 "/ desktop viewer",

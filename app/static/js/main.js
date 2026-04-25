@@ -7,6 +7,7 @@ const menuToggle = document.querySelector("[data-menu-toggle]");
 const menuBackdrop = document.querySelector("[data-menu-backdrop]");
 const menuCloseButton = document.querySelector("[data-menu-close]");
 const sidebar = document.querySelector(".sidebar");
+const mainPanel = document.querySelector(".main-panel");
 const viewModeButtons = document.querySelectorAll("[data-view-mode-option]");
 const viewModeLabels = document.querySelectorAll("[data-view-mode-label]");
 const viewModeNotes = document.querySelectorAll("[data-view-mode-note]");
@@ -16,7 +17,10 @@ const sidebarFolds = document.querySelectorAll("[data-sidebar-fold]");
 
 let lockedScrollY = 0;
 let scrollSpyPrimaryKey = "";
+let scrollSpyReadingKey = "";
+let scrollSpySecondaryKey = "";
 let scrollSpySectionId = "";
+let homeScrollSpyLockUntil = 0;
 
 const resolveAutoViewMode = () => (window.innerWidth <= MOBILE_BREAKPOINT ? "mobile" : "desktop");
 const isMobileView = () => root.dataset.viewMode === "mobile";
@@ -44,6 +48,7 @@ const HOME_SCROLL_SPY_SECTIONS = [
     { id: "recent-versions", key: "recent_changes" },
     { id: "history-archive", key: "history_archive" },
 ];
+const HOME_READING_SCROLL_SPY_SELECTOR = 'section.section-cluster[id^="reading-category-"]';
 
 const BOTTOM_PAGE_MAP = {
     history: "history",
@@ -60,6 +65,33 @@ const NAV_GROUP_FIELD_MAP = {
     secondary: "secondaryKey",
     bottom: "bottomKey",
 };
+const isScrollableOverflow = (value) => ["auto", "scroll", "overlay"].includes(value);
+const getReadingKeyFromSectionId = (sectionId) =>
+    (sectionId || "").startsWith("reading-category-") ? sectionId.replace(/^reading-category-/, "") : "";
+const resolveHomeScrollContainer = () => {
+    if (!mainPanel) {
+        return window;
+    }
+    const styles = window.getComputedStyle(mainPanel);
+    const canScroll =
+        isScrollableOverflow(styles.overflowY) ||
+        isScrollableOverflow(styles.overflow) ||
+        isScrollableOverflow(styles.overflowBlock);
+    if (canScroll && mainPanel.scrollHeight > mainPanel.clientHeight + 1) {
+        return mainPanel;
+    }
+    return window;
+};
+const getHomeScrollViewportHeight = (scrollContainer) =>
+    scrollContainer === window ? window.innerHeight : scrollContainer.clientHeight;
+const getHomeSectionTop = (sectionElement, scrollContainer) => {
+    const sectionRect = sectionElement.getBoundingClientRect();
+    if (scrollContainer === window) {
+        return sectionRect.top;
+    }
+    const containerRect = scrollContainer.getBoundingClientRect();
+    return sectionRect.top - containerRect.top;
+};
 
 const resolveActiveNavState = () => {
     const page = getCurrentPage();
@@ -75,7 +107,11 @@ const resolveActiveNavState = () => {
     };
 
     if (page === "home" || path === "/" || path.startsWith("/day/")) {
-        if (hash.startsWith("reading-category-")) {
+        if (scrollSpySectionId) {
+            state.primaryKey = scrollSpyPrimaryKey;
+            state.readingKey = scrollSpyReadingKey;
+            state.secondaryKey = scrollSpySecondaryKey;
+        } else if (hash.startsWith("reading-category-")) {
             const hashReadingKey = hash.replace(/^reading-category-/, "");
             if (hashReadingKey === "reading_note") {
                 state.secondaryKey = "reading_note";
@@ -130,19 +166,15 @@ const syncActiveNavState = () => {
     });
 };
 
-const setHomeScrollSpyState = (primaryKey, sectionId, updateHash = false) => {
-    if (!primaryKey) {
+const setHomeScrollSpyState = ({ primaryKey = "", readingKey = "", secondaryKey = "", sectionId = "" }, updateHash = false) => {
+    if (!sectionId) {
         return;
     }
     scrollSpyPrimaryKey = primaryKey;
+    scrollSpyReadingKey = readingKey;
+    scrollSpySecondaryKey = secondaryKey;
     scrollSpySectionId = sectionId || "";
-    if (
-        updateHash &&
-        sectionId &&
-        isDashboardHomePage() &&
-        !getCurrentHash().startsWith("reading-category-") &&
-        window.location.hash !== `#${sectionId}`
-    ) {
+    if (updateHash && isDashboardHomePage() && window.location.hash !== `#${sectionId}`) {
         const nextUrl = `${window.location.pathname}${window.location.search}#${sectionId}`;
         window.history.replaceState(window.history.state, "", nextUrl);
     }
@@ -154,24 +186,48 @@ const bindHomePrimaryScrollSpy = () => {
         return;
     }
 
-    const trackedSections = HOME_SCROLL_SPY_SECTIONS
-        .map((item) => {
+    const trackedSections = [
+        ...HOME_SCROLL_SPY_SECTIONS.map((item) => {
             const element = document.getElementById(item.id);
-            return element ? { ...item, element } : null;
-        })
-        .filter(Boolean);
+            return element
+                ? {
+                      id: item.id,
+                      element,
+                      primaryKey: item.key,
+                      readingKey: "",
+                      secondaryKey: "",
+                  }
+                : null;
+        }),
+        ...Array.from(document.querySelectorAll(HOME_READING_SCROLL_SPY_SELECTOR)).map((element) => {
+            const readingKey = getReadingKeyFromSectionId(element.id);
+            return readingKey
+                ? {
+                      id: element.id,
+                      element,
+                      primaryKey: readingKey === "theme_track" ? "theme_track" : "",
+                      readingKey,
+                      secondaryKey: "",
+                  }
+                : null;
+        }),
+    ].filter(Boolean);
 
     if (!trackedSections.length) {
         return;
     }
 
+    let scrollEventTarget = null;
+    let ticking = false;
+
     const measureActiveSection = (updateHash = false) => {
-        const offset = Math.max(128, Math.min(window.innerHeight * 0.22, 220));
+        const scrollContainer = scrollEventTarget || resolveHomeScrollContainer();
+        const offset = Math.max(128, Math.min(getHomeScrollViewportHeight(scrollContainer) * 0.22, 220));
         let activeSection = trackedSections[0];
 
         trackedSections.forEach((section) => {
-            const rect = section.element.getBoundingClientRect();
-            if (rect.top - offset <= 0) {
+            const top = getHomeSectionTop(section.element, scrollContainer);
+            if (top - offset <= 0) {
                 activeSection = section;
             }
         });
@@ -179,13 +235,25 @@ const bindHomePrimaryScrollSpy = () => {
         if (!activeSection) {
             return;
         }
-        if (activeSection.key === scrollSpyPrimaryKey && activeSection.id === scrollSpySectionId) {
+        if (
+            activeSection.primaryKey === scrollSpyPrimaryKey &&
+            activeSection.readingKey === scrollSpyReadingKey &&
+            activeSection.secondaryKey === scrollSpySecondaryKey &&
+            activeSection.id === scrollSpySectionId
+        ) {
             return;
         }
-        setHomeScrollSpyState(activeSection.key, activeSection.id, updateHash);
+        setHomeScrollSpyState(
+            {
+                primaryKey: activeSection.primaryKey || "",
+                readingKey: activeSection.readingKey || "",
+                secondaryKey: activeSection.secondaryKey || "",
+                sectionId: activeSection.id,
+            },
+            updateHash,
+        );
     };
 
-    let ticking = false;
     const scheduleMeasure = (updateHash = false) => {
         if (ticking) {
             return;
@@ -193,35 +261,75 @@ const bindHomePrimaryScrollSpy = () => {
         ticking = true;
         window.requestAnimationFrame(() => {
             ticking = false;
+            bindScrollTarget();
             measureActiveSection(updateHash);
         });
     };
 
+    const scrollHandler = () => {
+        if (Date.now() < homeScrollSpyLockUntil) {
+            return;
+        }
+        scheduleMeasure(true);
+    };
+
+    const bindScrollTarget = () => {
+        const nextScrollTarget = resolveHomeScrollContainer();
+        if (nextScrollTarget === scrollEventTarget) {
+            return;
+        }
+        if (scrollEventTarget) {
+            scrollEventTarget.removeEventListener("scroll", scrollHandler);
+        }
+        scrollEventTarget = nextScrollTarget;
+        scrollEventTarget.addEventListener("scroll", scrollHandler, { passive: true });
+    };
+
+    const lockScrollSpyAfterNavClick = () => {
+        homeScrollSpyLockUntil = Date.now() + 320;
+        window.setTimeout(() => {
+            scheduleMeasure(true);
+        }, 340);
+    };
+
     navLinks.forEach((link) => {
-        if ((link.dataset.navGroup || "") !== "primary") {
+        const group = link.dataset.navGroup || "";
+        if (group !== "primary" && group !== "reading") {
             return;
         }
         const href = link.getAttribute("href") || "";
-        const matchedSection = trackedSections.find((section) => href.endsWith(`#${section.id}`));
+        const hashIndex = href.indexOf("#");
+        if (hashIndex === -1) {
+            return;
+        }
+        const targetId = href.slice(hashIndex + 1);
+        const matchedSection = trackedSections.find((section) => section.id === targetId);
         if (!matchedSection) {
             return;
         }
         link.addEventListener("click", () => {
-            setHomeScrollSpyState(matchedSection.key, matchedSection.id, false);
+            setHomeScrollSpyState(
+                {
+                    primaryKey: matchedSection.primaryKey || "",
+                    readingKey: matchedSection.readingKey || "",
+                    secondaryKey: matchedSection.secondaryKey || "",
+                    sectionId: matchedSection.id,
+                },
+                false,
+            );
+            lockScrollSpyAfterNavClick();
         });
     });
 
-    window.addEventListener(
-        "scroll",
-        () => {
-            if (!getCurrentHash().startsWith("reading-category-")) {
-                scheduleMeasure(true);
-            }
-        },
-        { passive: true },
-    );
-    window.addEventListener("resize", () => scheduleMeasure(false));
-    window.addEventListener("load", () => scheduleMeasure(false));
+    bindScrollTarget();
+    window.addEventListener("resize", () => {
+        bindScrollTarget();
+        scheduleMeasure(false);
+    });
+    window.addEventListener("load", () => {
+        bindScrollTarget();
+        scheduleMeasure(false);
+    });
     scheduleMeasure(false);
 };
 
